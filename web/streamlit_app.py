@@ -1,9 +1,11 @@
 from dataclasses import dataclass
+import os
 
 import pandas as pd
 import streamlit as st
 
 from app.parsers.binary import BinaryDataParser
+from app.services.ai_assistant import GeminiFlightAssistant
 from app.services.analyzer import AnalysisService
 from app.services.pipeline import (
     collect_metrics,
@@ -25,6 +27,7 @@ class SidebarState:
     source_label: str
     imu_index: int
     color_by: str
+    gemini_api_key: str
 
 
 def _format_metric(value: float) -> str:
@@ -35,8 +38,7 @@ def _format_metric(value: float) -> str:
     return str(value)
 
 
-def _render_summary_tab(analyzer: AnalysisService, df_gps: pd.DataFrame, df_imu: pd.DataFrame) -> None:
-    metrics = collect_metrics(analyzer, df_gps, df_imu)
+def _render_summary_tab(metrics: dict[str, float]) -> None:
     cols = st.columns(5)
     for idx, (key, value) in enumerate(metrics.items()):
         cols[idx % 5].metric(key, _format_metric(value))
@@ -61,11 +63,43 @@ def _render_dataframes_tab(df_gps: pd.DataFrame, df_imu: pd.DataFrame) -> None:
         st.dataframe(df_imu, use_container_width=True, height=300)
 
 
+def _render_ai_tab(
+    metrics: dict[str, float],
+    df_gps: pd.DataFrame,
+    df_imu: pd.DataFrame,
+    state: SidebarState,
+) -> None:
+    st.subheader("AI Flight Analysis (Gemini)")
+    st.caption("The report is generated in English from flight metrics and telemetry summary.")
+
+    if not state.gemini_api_key:
+        st.info("Provide a Gemini API key in the sidebar (or via GEMINI_API_KEY environment variable).")
+        return
+
+    if st.button("Generate AI Analysis", use_container_width=True):
+        try:
+            assistant = GeminiFlightAssistant(api_key=state.gemini_api_key, model_name="gemini-2.5-flash")
+            with st.spinner("Generating analysis report..."):
+                analysis = assistant.generate_analysis(
+                    metrics=metrics,
+                    df_gps=df_gps,
+                    df_imu=df_imu,
+                )
+            st.session_state["ai_analysis"] = analysis
+        except Exception as exc:
+            st.error(f"Failed to generate AI analysis: {exc}")
+            return
+
+    existing = st.session_state.get("ai_analysis")
+    if existing:
+        st.markdown(existing)
+
+
 def _load_data_from_sidebar(parser: BinaryDataParser) -> SidebarState:
     source_mode = st.radio("Data source", ["Local file", "Upload BIN"], index=0)
 
-    data = None
-    source_label = ""
+    data = st.session_state.get("loaded_data")
+    source_label = st.session_state.get("loaded_source_label", "")
 
     if source_mode == "Local file":
         data_files = list_local_bin_files("data")
@@ -73,21 +107,51 @@ def _load_data_from_sidebar(parser: BinaryDataParser) -> SidebarState:
             st.warning("No .BIN files found in the data/ directory.")
         else:
             selected = st.selectbox("Select BIN file", data_files, format_func=lambda p: str(p))
-            source_label = str(selected)
             if st.button("Load Data", use_container_width=True):
                 data = parse_data_from_path(parser, str(selected))
+                source_label = str(selected)
+                st.session_state["loaded_data"] = data
+                st.session_state["loaded_source_label"] = source_label
+                st.session_state.pop("ai_analysis", None)
     else:
         uploaded = st.file_uploader("Upload a BIN file", type=["bin", "BIN"])
         if uploaded is not None:
-            source_label = uploaded.name
             if st.button("Load Data", use_container_width=True):
                 data = parse_uploaded_bin(parser, uploaded)
+                source_label = uploaded.name
+                st.session_state["loaded_data"] = data
+                st.session_state["loaded_source_label"] = source_label
+                st.session_state.pop("ai_analysis", None)
+
+    if source_label:
+        st.caption(f"Current loaded file: {source_label}")
+
+    if st.button("Clear Loaded Data", use_container_width=True):
+        st.session_state.pop("loaded_data", None)
+        st.session_state.pop("loaded_source_label", None)
+        st.session_state.pop("ai_analysis", None)
+        data = None
+        source_label = ""
 
     st.header("Filters")
     imu_index = st.number_input("IMU Module Index", min_value=0, max_value=9, value=0, step=1)
     color_by = st.selectbox("3D Color Mode", ["combined", "ground", "vertical"], index=0)
 
-    return SidebarState(data=data, source_label=source_label, imu_index=int(imu_index), color_by=color_by)
+    st.header("AI Assistant")
+    gemini_api_key = st.text_input(
+        "Gemini API Key",
+        value=os.getenv("GEMINI_API_KEY", ""),
+        type="password",
+        help="The key is not stored in code. You can also set GEMINI_API_KEY in your environment.",
+    )
+
+    return SidebarState(
+        data=data,
+        source_label=source_label,
+        imu_index=int(imu_index),
+        color_by=color_by,
+        gemini_api_key=gemini_api_key.strip(),
+    )
 
 
 def main() -> None:
@@ -122,16 +186,21 @@ def main() -> None:
         st.error("GPS data is missing or empty in this log file.")
         return
 
-    tabs = st.tabs(["Summary", "3D Trajectory", "DataFrames"])
+    metrics = collect_metrics(analyzer, df_gps, df_imu)
+
+    tabs = st.tabs(["Summary", "3D Trajectory", "DataFrames", "AI Analysis"])
 
     with tabs[0]:
-        _render_summary_tab(analyzer, df_gps, df_imu)
+        _render_summary_tab(metrics)
 
     with tabs[1]:
         _render_trajectory_tab(df_gps, state.color_by)
 
     with tabs[2]:
         _render_dataframes_tab(df_gps, df_imu)
+
+    with tabs[3]:
+        _render_ai_tab(metrics, df_gps, df_imu, state)
 
 
 if __name__ == "__main__":
