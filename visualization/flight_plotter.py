@@ -3,13 +3,7 @@ import pandas as pd
 import plotly.graph_objects as go
 
 
-def plot_flight_path_3d(
-	df_gps: pd.DataFrame,
-	output_html: str = "flight_trajectory_enu.html",
-	auto_open: bool = False,
-	color_by: str = "combined",
-):
-	"""Build an interactive Plotly 3D trajectory with velocity-based dynamic coloring."""
+def _validate_plot_input(df_gps: pd.DataFrame) -> None:
 	required_columns = {"Eeast", "North", "Up"}
 	missing = required_columns - set(df_gps.columns)
 	if missing:
@@ -18,6 +12,8 @@ def plot_flight_path_3d(
 	if "Spd" not in df_gps.columns or "VZ" not in df_gps.columns:
 		raise ValueError("df_gps must include 'Spd' and 'VZ' columns for dynamic velocity coloring")
 
+
+def _build_trajectory(df_gps: pd.DataFrame) -> pd.DataFrame:
 	e = pd.to_numeric(df_gps["Eeast"], errors="coerce")
 	n = pd.to_numeric(df_gps["North"], errors="coerce")
 	u = pd.to_numeric(df_gps["Up"], errors="coerce")
@@ -31,28 +27,33 @@ def plot_flight_path_3d(
 	if trajectory.empty or len(trajectory) < 2:
 		raise ValueError("df_gps has no valid ENU points to plot")
 
+	return trajectory
+
+
+def _resolve_color_metric(trajectory: pd.DataFrame, color_by: str) -> tuple[np.ndarray, str, str]:
 	color_mode = color_by.strip().lower()
 	if color_mode == "ground":
-		velocity_color = trajectory["Spd"].to_numpy(dtype=float)
-		color_title = "Ground Speed (m/s)"
-		plot_title_suffix = "Ground Speed"
-	elif color_mode == "vertical":
-		velocity_color = trajectory["ClimbRate"].to_numpy(dtype=float)
-		color_title = "Climb Rate (m/s)"
-		plot_title_suffix = "Climb Rate"
-	else:
-		velocity_color = np.sqrt(
-			trajectory["Spd"].to_numpy(dtype=float) ** 2 + trajectory["ClimbRate"].to_numpy(dtype=float) ** 2
-		)
-		color_title = "Total Speed (m/s)"
-		plot_title_suffix = "Total Speed"
+		return trajectory["Spd"].to_numpy(dtype=float), "Ground Speed (m/s)", "Ground Speed"
 
-	x = np.ravel(trajectory["Eeast"].to_numpy(dtype=float))
-	y = np.ravel(trajectory["North"].to_numpy(dtype=float))
-	z = np.ravel(trajectory["Up"].to_numpy(dtype=float))
-	ground_speed = np.ravel(trajectory["Spd"].to_numpy(dtype=float))
-	climb_rate = np.ravel(trajectory["ClimbRate"].to_numpy(dtype=float))
+	if color_mode == "vertical":
+		return trajectory["ClimbRate"].to_numpy(dtype=float), "Climb Rate (m/s)", "Climb Rate"
 
+	velocity_color = np.sqrt(
+		trajectory["Spd"].to_numpy(dtype=float) ** 2 + trajectory["ClimbRate"].to_numpy(dtype=float) ** 2
+	)
+	return velocity_color, "Total Speed (m/s)", "Total Speed"
+
+
+def _build_figure(
+	x: np.ndarray,
+	y: np.ndarray,
+	z: np.ndarray,
+	ground_speed: np.ndarray,
+	climb_rate: np.ndarray,
+	velocity_color: np.ndarray,
+	color_title: str,
+	plot_title_suffix: str,
+):
 	fig = go.Figure()
 	fig.add_trace(
 		go.Scatter3d(
@@ -126,6 +127,28 @@ def plot_flight_path_3d(
 		},
 		margin={"l": 0, "r": 24, "b": 0, "t": 40},
 	)
+
+	return fig
+
+
+def plot_flight_path_3d(
+	df_gps: pd.DataFrame,
+	output_html: str = "flight_trajectory_enu.html",
+	auto_open: bool = False,
+	color_by: str = "combined",
+):
+	"""Build an interactive Plotly 3D trajectory with velocity-based dynamic coloring."""
+	_validate_plot_input(df_gps)
+	trajectory = _build_trajectory(df_gps)
+	velocity_color, color_title, plot_title_suffix = _resolve_color_metric(trajectory, color_by)
+
+	x = np.ravel(trajectory["Eeast"].to_numpy(dtype=float))
+	y = np.ravel(trajectory["North"].to_numpy(dtype=float))
+	z = np.ravel(trajectory["Up"].to_numpy(dtype=float))
+	ground_speed = np.ravel(trajectory["Spd"].to_numpy(dtype=float))
+	climb_rate = np.ravel(trajectory["ClimbRate"].to_numpy(dtype=float))
+
+	fig = _build_figure(x, y, z, ground_speed, climb_rate, velocity_color, color_title, plot_title_suffix)
 
 	if output_html:
 		fig.write_html(output_html, include_plotlyjs="cdn", auto_open=auto_open)

@@ -1,17 +1,30 @@
-import os
-import tempfile
-from pathlib import Path
+from dataclasses import dataclass
 
 import pandas as pd
 import streamlit as st
 
-from app.core.utils import wgs84_to_enu
 from app.parsers.binary import BinaryDataParser
 from app.services.analyzer import AnalysisService
+from app.services.pipeline import (
+    collect_metrics,
+    list_local_bin_files,
+    parse_data_from_path,
+    parse_uploaded_bin,
+    ProcessedTelemetry,
+    prepare_telemetry_frames,
+)
 from visualization.flight_plotter import plot_flight_path_3d
 
 
 st.set_page_config(page_title="Flight Data Analyzer", layout="wide")
+
+
+@dataclass(frozen=True)
+class SidebarState:
+    data: dict[str, pd.DataFrame] | None
+    source_label: str
+    imu_index: int
+    color_by: str
 
 
 def _format_metric(value: float) -> str:
@@ -22,38 +35,59 @@ def _format_metric(value: float) -> str:
     return str(value)
 
 
-def _collect_metrics(analyzer: AnalysisService, df_gps: pd.DataFrame, df_imu: pd.DataFrame) -> dict:
-    max_acceleration = analyzer.get_max_acceleration(df_imu) if df_imu is not None and not df_imu.empty else {}
-
-    return {
-        "Flight Duration (s)": analyzer.get_flight_duration(df_gps),
-        "Distance Traveled (m)": analyzer.get_distance_traveled(df_gps),
-        "Max Horizontal Speed (m/s)": analyzer.get_max_horizontal_speed(df_gps),
-        "Max Vertical Speed (m/s)": analyzer.get_max_vertical_speed(df_gps),
-        "Max Altitude (m)": analyzer.get_max_altitude(df_gps),
-        "Max Acc X (m/s^2)": max_acceleration.get("AccX", 0.0),
-        "Max Acc Y (m/s^2)": max_acceleration.get("AccY", 0.0),
-        "Max Acc Z (m/s^2)": max_acceleration.get("AccZ", 0.0),
-        "GPS Sample Rate (Hz)": analyzer.get_sample_rate(df_gps),
-        "IMU Sample Rate (Hz)": analyzer.get_sample_rate(df_imu),
-    }
+def _render_summary_tab(analyzer: AnalysisService, df_gps: pd.DataFrame, df_imu: pd.DataFrame) -> None:
+    metrics = collect_metrics(analyzer, df_gps, df_imu)
+    cols = st.columns(5)
+    for idx, (key, value) in enumerate(metrics.items()):
+        cols[idx % 5].metric(key, _format_metric(value))
 
 
-def _parse_from_path(parser: BinaryDataParser, file_path: str) -> dict:
-    return parser.parse(file_path)
-
-
-def _parse_uploaded(parser: BinaryDataParser, uploaded_file) -> dict:
-    suffix = Path(uploaded_file.name).suffix or ".BIN"
-    temp_path = ""
+def _render_trajectory_tab(df_gps: pd.DataFrame, color_by: str) -> None:
     try:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-            tmp.write(uploaded_file.getbuffer())
-            temp_path = tmp.name
-        return parser.parse(temp_path)
-    finally:
-        if temp_path and os.path.exists(temp_path):
-            os.remove(temp_path)
+        fig = plot_flight_path_3d(df_gps, output_html=None, auto_open=False, color_by=color_by)
+        st.plotly_chart(fig, use_container_width=True)
+    except Exception as exc:
+        st.error(f"Unable to render 3D trajectory: {exc}")
+
+
+def _render_dataframes_tab(df_gps: pd.DataFrame, df_imu: pd.DataFrame) -> None:
+    st.subheader("GPS Data")
+    st.dataframe(df_gps, use_container_width=True, height=300)
+
+    st.subheader("IMU Data")
+    if df_imu.empty:
+        st.warning("No IMU rows available for the selected module index.")
+    else:
+        st.dataframe(df_imu, use_container_width=True, height=300)
+
+
+def _load_data_from_sidebar(parser: BinaryDataParser) -> SidebarState:
+    source_mode = st.radio("Data source", ["Local file", "Upload BIN"], index=0)
+
+    data = None
+    source_label = ""
+
+    if source_mode == "Local file":
+        data_files = list_local_bin_files("data")
+        if not data_files:
+            st.warning("No .BIN files found in the data/ directory.")
+        else:
+            selected = st.selectbox("Select BIN file", data_files, format_func=lambda p: str(p))
+            source_label = str(selected)
+            if st.button("Load Data", use_container_width=True):
+                data = parse_data_from_path(parser, str(selected))
+    else:
+        uploaded = st.file_uploader("Upload a BIN file", type=["bin", "BIN"])
+        if uploaded is not None:
+            source_label = uploaded.name
+            if st.button("Load Data", use_container_width=True):
+                data = parse_uploaded_bin(parser, uploaded)
+
+    st.header("Filters")
+    imu_index = st.number_input("IMU Module Index", min_value=0, max_value=9, value=0, step=1)
+    color_by = st.selectbox("3D Color Mode", ["combined", "ground", "vertical"], index=0)
+
+    return SidebarState(data=data, source_label=source_label, imu_index=int(imu_index), color_by=color_by)
 
 
 def main() -> None:
@@ -65,81 +99,39 @@ def main() -> None:
 
     with st.sidebar:
         st.header("Inputs")
-        source_mode = st.radio("Data source", ["Local file", "Upload BIN"], index=0)
+        state = _load_data_from_sidebar(parser)
 
-        data = None
-        source_label = ""
-
-        if source_mode == "Local file":
-            data_files = sorted(Path("data").glob("*.BIN"))
-            if not data_files:
-                st.warning("No .BIN files found in the data/ directory.")
-            else:
-                selected = st.selectbox("Select BIN file", data_files, format_func=lambda p: str(p))
-                source_label = str(selected)
-                if st.button("Load Data", use_container_width=True):
-                    data = _parse_from_path(parser, str(selected))
-
-        else:
-            uploaded = st.file_uploader("Upload a BIN file", type=["bin", "BIN"])
-            if uploaded is not None:
-                source_label = uploaded.name
-                if st.button("Load Data", use_container_width=True):
-                    data = _parse_uploaded(parser, uploaded)
-
-        st.header("Filters")
-        imu_index = st.number_input("IMU Module Index", min_value=0, max_value=9, value=0, step=1)
-        color_by = st.selectbox("3D Color Mode", ["combined", "ground", "vertical"], index=0)
-
-    if data is None:
+    if state.data is None:
         st.info("Select a source and click 'Load Data' to begin.")
         return
 
-    if source_label:
-        st.success(f"Loaded: {source_label}")
-
-    df_gps = data.get("GPS", pd.DataFrame())
-    df_imu = data.get("IMU", pd.DataFrame())
-
-    if df_gps.empty:
-        st.error("GPS data is missing or empty in this log file.")
-        return
+    if state.source_label:
+        st.success(f"Loaded: {state.source_label}")
 
     try:
-        df_gps = analyzer.filter_gps_low_quality_samples(df_gps)
-        df_gps = wgs84_to_enu(df_gps)
-
-        if not df_imu.empty:
-            df_imu = analyzer.filter_imu_module(df_imu, imu_index=int(imu_index))
+        telemetry: ProcessedTelemetry = prepare_telemetry_frames(analyzer, state.data, imu_index=state.imu_index)
 
     except Exception as exc:
         st.error(f"Failed to process telemetry data: {exc}")
         return
 
+    df_gps = telemetry.df_gps
+    df_imu = telemetry.df_imu
+
+    if df_gps.empty:
+        st.error("GPS data is missing or empty in this log file.")
+        return
+
     tabs = st.tabs(["Summary", "3D Trajectory", "DataFrames"])
 
     with tabs[0]:
-        metrics = _collect_metrics(analyzer, df_gps, df_imu)
-        cols = st.columns(5)
-        for idx, (key, value) in enumerate(metrics.items()):
-            cols[idx % 5].metric(key, _format_metric(value))
+        _render_summary_tab(analyzer, df_gps, df_imu)
 
     with tabs[1]:
-        try:
-            fig = plot_flight_path_3d(df_gps, output_html=None, auto_open=False, color_by=color_by)
-            st.plotly_chart(fig, use_container_width=True)
-        except Exception as exc:
-            st.error(f"Unable to render 3D trajectory: {exc}")
+        _render_trajectory_tab(df_gps, state.color_by)
 
     with tabs[2]:
-        st.subheader("GPS Data")
-        st.dataframe(df_gps, use_container_width=True, height=300)
-
-        st.subheader("IMU Data")
-        if df_imu.empty:
-            st.warning("No IMU rows available for the selected module index.")
-        else:
-            st.dataframe(df_imu, use_container_width=True, height=300)
+        _render_dataframes_tab(df_gps, df_imu)
 
 
 if __name__ == "__main__":
