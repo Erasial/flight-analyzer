@@ -56,6 +56,6 @@ def wgs84_to_enu(df: pd.DataFrame) -> pd.DataFrame:
         n = -sin_lat0 * cos_lon0 * dx - sin_lat0 * sin_lon0 * dy + cos_lat0 * dz
         u = cos_lat0 * cos_lon0 * dx + cos_lat0 * sin_lon0 * dy + sin_lat0 * dz
 
-        enu_df = pd.DataFrame({'E': e, 'N': n, 'U': u})
+        enu_df = pd.DataFrame({'Eeast': e, 'North': n, 'Up': u})
         return pd.concat([df.reset_index(drop=True), enu_df], axis=1)
     return df

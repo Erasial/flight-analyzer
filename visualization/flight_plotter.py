@@ -29,7 +29,7 @@ def plot_flight_path_3d(
 	color_by: str = "combined",
 ):
 	"""Build an interactive Plotly 3D trajectory with velocity-based dynamic coloring."""
-	required_columns = {"E", "N", "U"}
+	required_columns = {"Eeast", "North", "Up"}
 	missing = required_columns - set(df_gps.columns)
 	if missing:
 		raise ValueError(f"df_gps is missing required ENU columns: {sorted(missing)}")
@@ -37,15 +37,15 @@ def plot_flight_path_3d(
 	if "Spd" not in df_gps.columns or "VZ" not in df_gps.columns:
 		raise ValueError("df_gps must include 'Spd' and 'VZ' columns for dynamic velocity coloring")
 
-	e = _extract_axis(df_gps, "E")
-	n = _extract_axis(df_gps, "N")
-	u = _extract_axis(df_gps, "U")
+	e = _extract_axis(df_gps, "Eeast")
+	n = _extract_axis(df_gps, "North")
+	u = _extract_axis(df_gps, "Up")
 	spd = _extract_axis(df_gps, "Spd")
 	vz = _extract_axis(df_gps, "VZ")
 	climb = -vz  # ArduPilot convention: negative VZ means climbing.
 
 	trajectory = pd.DataFrame(
-		{"E": e, "N": n, "U": u, "Spd": spd, "VZ": vz, "ClimbRate": climb}
+		{"Eeast": e, "North": n, "Up": u, "Spd": spd, "VZ": vz, "ClimbRate": climb}
 	).dropna()
 	if trajectory.empty or len(trajectory) < 2:
 		raise ValueError("df_gps has no valid ENU points to plot")
@@ -66,9 +66,9 @@ def plot_flight_path_3d(
 		color_title = "Total Speed (m/s)"
 		plot_title_suffix = "Total Speed"
 
-	x = np.ravel(trajectory["E"].to_numpy(dtype=float))
-	y = np.ravel(trajectory["N"].to_numpy(dtype=float))
-	z = np.ravel(trajectory["U"].to_numpy(dtype=float))
+	x = np.ravel(trajectory["Eeast"].to_numpy(dtype=float))
+	y = np.ravel(trajectory["North"].to_numpy(dtype=float))
+	z = np.ravel(trajectory["Up"].to_numpy(dtype=float))
 	ground_speed = np.ravel(trajectory["Spd"].to_numpy(dtype=float))
 	climb_rate = np.ravel(trajectory["ClimbRate"].to_numpy(dtype=float))
 
