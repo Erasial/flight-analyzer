@@ -1,25 +1,6 @@
 import numpy as np
 import pandas as pd
-
-
-def _load_plotly():
-	try:
-		import plotly.graph_objects as go
-	except ImportError as exc:
-		raise ImportError(
-			"plotly is required for interactive plotting. Install it with: pip install plotly"
-		) from exc
-	return go
-
-
-def _extract_axis(df: pd.DataFrame, column_name: str) -> pd.Series:
-    """Return a 1D numeric series even when duplicate column names exist."""
-    axis_data = df[column_name]
-    if isinstance(axis_data, pd.DataFrame):
-        axis_data = axis_data.iloc[:, -1]
-
-    axis_series = pd.to_numeric(axis_data, errors="coerce")
-    return axis_series
+import plotly.graph_objects as go
 
 
 def plot_flight_path_3d(
@@ -37,11 +18,11 @@ def plot_flight_path_3d(
 	if "Spd" not in df_gps.columns or "VZ" not in df_gps.columns:
 		raise ValueError("df_gps must include 'Spd' and 'VZ' columns for dynamic velocity coloring")
 
-	e = _extract_axis(df_gps, "Eeast")
-	n = _extract_axis(df_gps, "North")
-	u = _extract_axis(df_gps, "Up")
-	spd = _extract_axis(df_gps, "Spd")
-	vz = _extract_axis(df_gps, "VZ")
+	e = pd.to_numeric(df_gps["Eeast"], errors="coerce")
+	n = pd.to_numeric(df_gps["North"], errors="coerce")
+	u = pd.to_numeric(df_gps["Up"], errors="coerce")
+	spd = pd.to_numeric(df_gps["Spd"], errors="coerce")
+	vz = pd.to_numeric(df_gps["VZ"], errors="coerce")
 	climb = -vz  # ArduPilot convention: negative VZ means climbing.
 
 	trajectory = pd.DataFrame(
@@ -71,8 +52,6 @@ def plot_flight_path_3d(
 	z = np.ravel(trajectory["Up"].to_numpy(dtype=float))
 	ground_speed = np.ravel(trajectory["Spd"].to_numpy(dtype=float))
 	climb_rate = np.ravel(trajectory["ClimbRate"].to_numpy(dtype=float))
-
-	go = _load_plotly()
 
 	fig = go.Figure()
 	fig.add_trace(
