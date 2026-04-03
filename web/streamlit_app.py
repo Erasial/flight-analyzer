@@ -50,20 +50,20 @@ def _render_summary_tab(metrics: dict[str, float]) -> None:
 def _render_trajectory_tab(df_gps: pd.DataFrame, color_by: str) -> None:
     try:
         fig = plot_flight_path_3d(df_gps, output_html=None, auto_open=False, color_by=color_by)
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
     except ValueError as exc:
         st.error(f"Unable to render 3D trajectory: {exc}")
 
 
 def _render_dataframes_tab(df_gps: pd.DataFrame, df_imu: pd.DataFrame) -> None:
     st.subheader("GPS Data")
-    st.dataframe(df_gps, use_container_width=True, height=300)
+    st.dataframe(df_gps, width="stretch", height=300)
 
     st.subheader("IMU Data")
     if df_imu.empty:
         st.warning("No IMU rows available for the selected module index.")
     else:
-        st.dataframe(df_imu, use_container_width=True, height=300)
+        st.dataframe(df_imu, width="stretch", height=300)
 
 
 def _render_ai_tab(
@@ -79,7 +79,7 @@ def _render_ai_tab(
         st.info("Provide a Gemini API key in the sidebar (or via GEMINI_API_KEY environment variable).")
         return
 
-    if st.button("Generate AI Analysis", use_container_width=True):
+    if st.button("Generate AI Analysis", width="stretch"):
         try:
             assistant = GeminiFlightAssistant(api_key=state.gemini_api_key, model_name="gemini-2.5-flash")
             with st.spinner("Generating analysis report..."):
@@ -111,7 +111,7 @@ def _load_data_from_sidebar(parser: BinaryDataParser) -> SidebarState:
             st.warning("No .BIN files found in the data/ directory.")
         else:
             selected = st.selectbox("Select BIN file", data_files, format_func=lambda p: str(p))
-            if st.button("Load Data", use_container_width=True):
+            if st.button("Load Data", width="stretch"):
                 try:
                     data = parse_data_from_path(parser, str(selected))
                     source_label = str(selected)
@@ -124,7 +124,7 @@ def _load_data_from_sidebar(parser: BinaryDataParser) -> SidebarState:
     else:
         uploaded = st.file_uploader("Upload a BIN file", type=["bin", "BIN"])
         if uploaded is not None:
-            if st.button("Load Data", use_container_width=True):
+            if st.button("Load Data", width="stretch"):
                 try:
                     data = parse_uploaded_bin(parser, uploaded)
                     source_label = uploaded.name
@@ -138,7 +138,7 @@ def _load_data_from_sidebar(parser: BinaryDataParser) -> SidebarState:
     if source_label:
         st.caption(f"Current loaded file: {source_label}")
 
-    if st.button("Clear Loaded Data", use_container_width=True):
+    if st.button("Clear Loaded Data", width="stretch"):
         st.session_state.pop("loaded_data", None)
         st.session_state.pop("loaded_source_label", None)
         st.session_state.pop("ai_analysis", None)
