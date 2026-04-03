@@ -1,6 +1,6 @@
-pandas
-numpy
-pymavlink
-plotly
-streamlit
-google-generativeai
+pandas==3.0.2
+numpy==2.4.4
+pymavlink==2.4.49
+plotly==6.6.0
+streamlit==1.56.0
+google-generativeai==0.8.6
