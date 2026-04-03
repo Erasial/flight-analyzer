@@ -21,9 +21,11 @@ def _build_trajectory(df_gps: pd.DataFrame) -> pd.DataFrame:
 	vz = pd.to_numeric(df_gps["VZ"], errors="coerce")
 	climb = -vz  # ArduPilot convention: negative VZ means climbing.
 
-	trajectory = pd.DataFrame(
-		{"East": e, "North": n, "Up": u, "Spd": spd, "VZ": vz, "ClimbRate": climb}
-	).dropna()
+	trajectory = pd.DataFrame({"East": e, "North": n, "Up": u, "Spd": spd, "VZ": vz, "ClimbRate": climb})
+	if "TimeUS" in df_gps.columns:
+		trajectory["TimeUS"] = pd.to_numeric(df_gps["TimeUS"], errors="coerce")
+
+	trajectory = trajectory.dropna(subset=["East", "North", "Up", "Spd", "VZ", "ClimbRate"])
 	if trajectory.empty or len(trajectory) < 2:
 		raise ValueError("df_gps has no valid ENU points to plot")
 
@@ -41,20 +43,60 @@ def _resolve_color_metric(
 	trajectory: pd.DataFrame,
 	color_by: str,
 	speed_unit: str,
-) -> tuple[np.ndarray, str, str, np.ndarray, np.ndarray, str]:
+) -> tuple[np.ndarray, str, str, np.ndarray, np.ndarray, str, str]:
 	color_mode = color_by.strip().lower()
-	unit_factor, unit_label = _resolve_speed_unit(speed_unit)
+	unit_factor, speed_unit_label = _resolve_speed_unit(speed_unit)
 	ground_speed = trajectory["Spd"].to_numpy(dtype=float) * unit_factor
 	climb_rate = trajectory["ClimbRate"].to_numpy(dtype=float) * unit_factor
 
 	if color_mode == "ground":
-		return ground_speed, f"Ground Speed ({unit_label})", "Ground Speed", ground_speed, climb_rate, unit_label
+		return (
+			ground_speed,
+			f"Ground Speed ({speed_unit_label})",
+			"Ground Speed",
+			ground_speed,
+			climb_rate,
+			speed_unit_label,
+			speed_unit_label,
+		)
 
 	if color_mode == "vertical":
-		return climb_rate, f"Climb Rate ({unit_label})", "Climb Rate", ground_speed, climb_rate, unit_label
+		return (
+			climb_rate,
+			f"Climb Rate ({speed_unit_label})",
+			"Climb Rate",
+			ground_speed,
+			climb_rate,
+			speed_unit_label,
+			speed_unit_label,
+		)
+
+	if color_mode == "time":
+		if "TimeUS" in trajectory.columns and not trajectory["TimeUS"].isna().all():
+			time_us = trajectory["TimeUS"].to_numpy(dtype=float)
+			time_color = (time_us - float(time_us[0])) / 1e6
+		else:
+			time_color = np.arange(len(trajectory), dtype=float)
+		return (
+			time_color,
+			"Flight Time (s)",
+			"Time",
+			ground_speed,
+			climb_rate,
+			speed_unit_label,
+			"s",
+		)
 
 	velocity_color = np.sqrt(ground_speed**2 + climb_rate**2)
-	return velocity_color, f"Total Speed ({unit_label})", "Total Speed", ground_speed, climb_rate, unit_label
+	return (
+		velocity_color,
+		f"Total Speed ({speed_unit_label})",
+		"Total Speed",
+		ground_speed,
+		climb_rate,
+		speed_unit_label,
+		speed_unit_label,
+	)
 
 
 def _build_figure(
@@ -66,7 +108,8 @@ def _build_figure(
 	velocity_color: np.ndarray,
 	color_title: str,
 	plot_title_suffix: str,
-	unit_label: str,
+	speed_unit_label: str,
+	color_metric_unit_label: str,
 ):
 	fig = go.Figure()
 	fig.add_trace(
@@ -103,9 +146,9 @@ def _build_figure(
 				"E: %{x:.2f} m<br>"
 				"N: %{y:.2f} m<br>"
 				"U: %{z:.2f} m<br>"
-				f"Ground Speed: %{{customdata[0]:.2f}} {unit_label}<br>"
-				f"Climb Rate: %{{customdata[1]:.2f}} {unit_label}<br>"
-				f"Color Metric: %{{customdata[2]:.2f}} {unit_label}<extra></extra>"
+				f"Ground Speed: %{{customdata[0]:.2f}} {speed_unit_label}<br>"
+				f"Climb Rate: %{{customdata[1]:.2f}} {speed_unit_label}<br>"
+				f"Color Metric: %{{customdata[2]:.2f}} {color_metric_unit_label}<extra></extra>"
 			),
 		)
 	)
@@ -161,7 +204,8 @@ def plot_flight_path_3d(
 		plot_title_suffix,
 		ground_speed,
 		climb_rate,
-		unit_label,
+		speed_unit_label,
+		color_metric_unit_label,
 	) = _resolve_color_metric(trajectory, color_by, speed_unit)
 
 	x = np.ravel(trajectory["East"].to_numpy(dtype=float))
@@ -179,7 +223,8 @@ def plot_flight_path_3d(
 		velocity_color,
 		color_title,
 		plot_title_suffix,
-		unit_label,
+		speed_unit_label,
+		color_metric_unit_label,
 	)
 
 	if output_html:

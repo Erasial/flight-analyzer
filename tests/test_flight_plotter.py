@@ -44,6 +44,23 @@ class TestFlightPlotter(unittest.TestCase):
         colorbar_title = fig.data[0].line.colorbar.title.text
         self.assertEqual(colorbar_title, "Ground Speed (km/h)")
 
+    def test_plot_supports_time_coloring(self) -> None:
+        df = pd.DataFrame(
+            {
+                "East": [0.0, 1.0, 2.0],
+                "North": [0.0, 1.0, 2.0],
+                "Up": [10.0, 11.0, 12.0],
+                "Spd": [2.0, 3.0, 4.0],
+                "VZ": [0.1, -0.2, 0.3],
+                "TimeUS": [1_000_000, 2_000_000, 3_000_000],
+            }
+        )
+
+        fig = plot_flight_path_3d(df, output_html=None, auto_open=False, color_by="time")
+
+        colorbar_title = fig.data[0].line.colorbar.title.text
+        self.assertEqual(colorbar_title, "Flight Time (s)")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -194,7 +194,7 @@ def _load_data_from_sidebar(parser: BinaryDataParser) -> SidebarState:
     st.header("Filters")
     imu_index = st.number_input("IMU Module Index", min_value=0, max_value=9, value=0, step=1)
     speed_unit = st.selectbox("Speed Unit", ["m/s", "km/h"], index=0)
-    color_by = st.selectbox("3D Color Mode", ["combined", "ground", "vertical"], index=0)
+    color_by = st.selectbox("3D Color Mode", ["combined", "ground", "vertical", "time"], index=0)
 
     st.header("AI Assistant")
     gemini_api_key = st.text_input(
