@@ -73,3 +73,19 @@ def collect_metrics(analyzer: AnalysisService, df_gps: pd.DataFrame, df_imu: pd.
         "GPS Sample Rate (Hz)": analyzer.get_sample_rate(df_gps),
         "IMU Sample Rate (Hz)": analyzer.get_sample_rate(df_imu),
     }
+
+
+def filter_gps_by_timeframe(df_gps: pd.DataFrame, start_seconds: float, end_seconds: float) -> pd.DataFrame:
+    if df_gps.empty or "TimeUS" not in df_gps.columns:
+        return df_gps
+
+    time_us = pd.to_numeric(df_gps["TimeUS"], errors="coerce")
+    if time_us.isna().all():
+        return df_gps
+
+    start_us = float(time_us.iloc[0])
+    relative_seconds = (time_us - start_us) / 1e6
+    lower = min(start_seconds, end_seconds)
+    upper = max(start_seconds, end_seconds)
+    mask = (relative_seconds >= lower) & (relative_seconds <= upper)
+    return df_gps.loc[mask].reset_index(drop=True)

@@ -10,6 +10,7 @@ from app.services.ai_assistant import GeminiFlightAssistant
 from app.services.analyzer import AnalysisService
 from app.services.pipeline import (
     collect_metrics,
+    filter_gps_by_timeframe,
     list_local_bin_files,
     parse_data_from_path,
     parse_uploaded_bin,
@@ -67,9 +68,29 @@ def _render_summary_tab(metrics: dict[str, float], speed_unit: str) -> None:
 
 
 def _render_trajectory_tab(df_gps: pd.DataFrame, color_by: str, speed_unit: str) -> None:
+    filtered_df = df_gps
+
+    if "TimeUS" in df_gps.columns and len(df_gps) > 1:
+        time_us = pd.to_numeric(df_gps["TimeUS"], errors="coerce")
+        if not time_us.isna().all():
+            relative_seconds = (time_us - float(time_us.iloc[0])) / 1e6
+            max_seconds = float(relative_seconds.max())
+            if max_seconds > 0:
+                time_window = st.slider(
+                    "Graph Timeframe (s)",
+                    min_value=0.0,
+                    max_value=max_seconds,
+                    value=(0.0, max_seconds),
+                )
+                filtered_df = filter_gps_by_timeframe(df_gps, time_window[0], time_window[1])
+
+    if len(filtered_df) < 2:
+        st.warning("Selected timeframe does not contain enough points to render trajectory.")
+        return
+
     try:
         fig = plot_flight_path_3d(
-            df_gps,
+            filtered_df,
             output_html=None,
             auto_open=False,
             color_by=color_by,

@@ -5,7 +5,12 @@ from pathlib import Path
 import pandas as pd
 
 from app.services.analyzer import AnalysisService
-from app.services.pipeline import collect_metrics, list_local_bin_files, prepare_telemetry_frames
+from app.services.pipeline import (
+    collect_metrics,
+    filter_gps_by_timeframe,
+    list_local_bin_files,
+    prepare_telemetry_frames,
+)
 
 
 class TestPipeline(unittest.TestCase):
@@ -78,6 +83,26 @@ class TestPipeline(unittest.TestCase):
         self.assertIn("Flight Duration (s)", metrics)
         self.assertIn("Distance Traveled (m)", metrics)
         self.assertIn("Max Acc X (m/s^2)", metrics)
+
+    def test_filter_gps_by_timeframe_filters_relative_window(self) -> None:
+        df_gps = pd.DataFrame(
+            {
+                "TimeUS": [1_000_000, 2_000_000, 3_000_000, 4_000_000],
+                "Lat": [48.0, 48.1, 48.2, 48.3],
+            }
+        )
+
+        filtered = filter_gps_by_timeframe(df_gps, start_seconds=1.0, end_seconds=2.0)
+
+        self.assertEqual(len(filtered), 2)
+        self.assertEqual(filtered["TimeUS"].tolist(), [2_000_000, 3_000_000])
+
+    def test_filter_gps_by_timeframe_returns_input_without_timeus(self) -> None:
+        df_gps = pd.DataFrame({"Lat": [48.0, 48.1]})
+
+        filtered = filter_gps_by_timeframe(df_gps, start_seconds=0.0, end_seconds=1.0)
+
+        self.assertEqual(len(filtered), 2)
 
 
 if __name__ == "__main__":
