@@ -1,49 +1,59 @@
-from app.core.utils import wgs84_to_enu
+import argparse
+import logging
+
 from app.parsers.binary import BinaryDataParser
 from app.services.analyzer import AnalysisService
+from app.services.pipeline import collect_metrics, parse_data_from_path, prepare_telemetry_frames
 from visualization.flight_plotter import plot_flight_path_3d
 
-if __name__ == "__main__":
-    file_path = "data/00000019.BIN"
-    
+
+def parse_args() -> argparse.Namespace:
+    cli = argparse.ArgumentParser(description="Analyze ArduPilot BIN telemetry and export metrics/trajectory plot.")
+    cli.add_argument("file_path", help="Path to .BIN log file")
+    cli.add_argument("--imu-index", type=int, default=0, help="IMU module index to analyze")
+    cli.add_argument(
+        "--output-html",
+        default="flight_trajectory_enu.html",
+        help="Output HTML path for 3D trajectory",
+    )
+    cli.add_argument("--no-plot", action="store_true", help="Skip trajectory HTML generation")
+    cli.add_argument(
+        "--log-level",
+        default="INFO",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+        help="Console logging verbosity",
+    )
+    return cli.parse_args()
+
+
+def run() -> int:
+    args = parse_args()
+    logging.basicConfig(level=getattr(logging, args.log_level), format="%(levelname)s: %(message)s")
+    logger = logging.getLogger(__name__)
+
     parser = BinaryDataParser()
     analyzer = AnalysisService()
-    
-    dataframes = parser.parse(file_path)
-    
-    df_gps = dataframes.get('GPS')
-    df_gps = analyzer.filter_gps_low_quality_samples(df_gps, min_status=3, require_positive_gwk=True)
-    df_gps = wgs84_to_enu(df_gps)
-    
-    df_imu = dataframes.get('IMU')
-    df_imu = analyzer.filter_imu_module(df_imu, imu_index=0)
-    
-    
-    print(df_gps.to_string())
-    
-    flght_duration = analyzer.get_flight_duration(df_gps)
-    distance_traveled = analyzer.get_distance_traveled(df_gps)
-    
-    max_vertical_speed = analyzer.get_max_vertical_speed(df_gps)
-    max_horizontal_speed = analyzer.get_max_horizontal_speed(df_gps)
-    max_altitude = analyzer.get_max_altitude(df_gps)
-    
-    max_acceleration = analyzer.get_max_acceleration(df_imu)
-    max_acceleration_x = max_acceleration.get('AccX', 'N/A')
-    max_acceleration_y = max_acceleration.get('AccY', 'N/A')
-    max_acceleration_z = max_acceleration.get('AccZ', 'N/A')
-    
-    print(f"Flight Duration: {flght_duration:.2f} seconds")
-    print(f"Distance Traveled: {distance_traveled:.2f} meters")
-    print(f"Max horizontal speed: {max_horizontal_speed:.2f} m/s")
-    print(f"Max vertical speed: {max_vertical_speed:.2f} m/s")
-    print(f"Max altitude: {max_altitude:.2f} m")
-    
-    print(f"Max accelerometer X: {max_acceleration_x:.2f} m/s²")
-    print(f"Max accelerometer Y: {max_acceleration_y:.2f} m/s²")
-    print(f"Max accelerometer Z: {max_acceleration_z:.2f} m/s²")
-    
-    print(f"Sample rate GPS: {analyzer.get_sample_rate(df_gps):.2f} Hz")
-    print(f"Sample rate IMU: {analyzer.get_sample_rate(df_imu):.2f} Hz")
-    
-    plot_flight_path_3d(df_gps, output_html="flight_trajectory_enu.html", auto_open=False)
+
+    try:
+        dataframes = parse_data_from_path(parser, args.file_path)
+        telemetry = prepare_telemetry_frames(analyzer, dataframes, imu_index=args.imu_index)
+
+        if telemetry.df_gps.empty:
+            raise ValueError("GPS data is missing or empty in this log file")
+
+        metrics = collect_metrics(analyzer, telemetry.df_gps, telemetry.df_imu)
+        for key, value in metrics.items():
+            print(f"{key}: {value:.2f}")
+
+        if not args.no_plot:
+            plot_flight_path_3d(telemetry.df_gps, output_html=args.output_html, auto_open=False)
+            logger.info("Saved trajectory HTML to %s", args.output_html)
+    except (FileNotFoundError, OSError, ValueError, KeyError) as exc:
+        logger.error("Analysis failed: %s", exc)
+        return 1
+
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(run())
