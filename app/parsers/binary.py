@@ -3,7 +3,7 @@ import pandas as pd
 from pymavlink import mavutil
 
 class BinaryDataParser(DataParser):
-    def parse(self, file_path: str) -> pd.DataFrame:
+    def parse(self, file_path: str) -> dict[str, pd.DataFrame]:
         mlog = mavutil.mavlink_connection(file_path)
     
         data = {}
