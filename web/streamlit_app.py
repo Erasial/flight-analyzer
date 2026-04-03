@@ -67,22 +67,37 @@ def _render_summary_tab(metrics: dict[str, float], speed_unit: str) -> None:
         cols[idx % 5].metric(key, _format_metric(value))
 
 
-def _render_trajectory_tab(df_gps: pd.DataFrame, color_by: str, speed_unit: str) -> None:
-    filtered_df = df_gps
+def _render_timeframe_filter(df_gps: pd.DataFrame) -> tuple[float, float] | None:
+    if "TimeUS" not in df_gps.columns or len(df_gps) <= 1:
+        return None
 
-    if "TimeUS" in df_gps.columns and len(df_gps) > 1:
-        time_us = pd.to_numeric(df_gps["TimeUS"], errors="coerce")
-        if not time_us.isna().all():
-            relative_seconds = (time_us - float(time_us.iloc[0])) / 1e6
-            max_seconds = float(relative_seconds.max())
-            if max_seconds > 0:
-                time_window = st.slider(
-                    "Graph Timeframe (s)",
-                    min_value=0.0,
-                    max_value=max_seconds,
-                    value=(0.0, max_seconds),
-                )
-                filtered_df = filter_gps_by_timeframe(df_gps, time_window[0], time_window[1])
+    time_us = pd.to_numeric(df_gps["TimeUS"], errors="coerce")
+    if time_us.isna().all():
+        return None
+
+    relative_seconds = (time_us - float(time_us.iloc[0])) / 1e6
+    max_seconds = float(relative_seconds.max())
+    if max_seconds <= 0:
+        return None
+
+    return st.slider(
+        "Graph Timeframe (s)",
+        min_value=0.0,
+        max_value=max_seconds,
+        value=(0.0, max_seconds),
+        key="sidebar_timeframe",
+    )
+
+
+def _render_trajectory_tab(
+    df_gps: pd.DataFrame,
+    color_by: str,
+    speed_unit: str,
+    timeframe_window: tuple[float, float] | None,
+) -> None:
+    filtered_df = df_gps
+    if timeframe_window is not None:
+        filtered_df = filter_gps_by_timeframe(df_gps, timeframe_window[0], timeframe_window[1])
 
     if len(filtered_df) < 2:
         st.warning("Selected timeframe does not contain enough points to render trajectory.")
@@ -247,6 +262,10 @@ def main() -> None:
         st.error("GPS data is missing or empty in this log file.")
         return
 
+    with st.sidebar:
+        st.subheader("Graph Filters")
+        timeframe_window = _render_timeframe_filter(df_gps)
+
     metrics = collect_metrics(analyzer, df_gps, df_imu)
 
     tabs = st.tabs(["Summary", "3D Trajectory", "DataFrames", "AI Analysis"])
@@ -255,7 +274,7 @@ def main() -> None:
         _render_summary_tab(metrics, state.speed_unit)
 
     with tabs[1]:
-        _render_trajectory_tab(df_gps, state.color_by, state.speed_unit)
+        _render_trajectory_tab(df_gps, state.color_by, state.speed_unit, timeframe_window)
 
     with tabs[2]:
         _render_dataframes_tab(df_gps, df_imu)
