@@ -83,7 +83,11 @@ class GeminiFlightAssistant:
             json.dumps(payload, ensure_ascii=False, indent=2),
         ]
 
-        response = self._model.generate_content("\n\n".join(prompt_parts))
+        try:
+            response = self._model.generate_content("\n\n".join(prompt_parts))
+        except Exception as exc:
+            raise RuntimeError("Gemini request failed") from exc
+
         text = (response.text or "").strip()
         if not text:
             raise RuntimeError("Gemini returned an empty response")

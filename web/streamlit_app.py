@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+import logging
 import os
 
 import pandas as pd
@@ -19,6 +20,8 @@ from visualization.flight_plotter import plot_flight_path_3d
 
 
 st.set_page_config(page_title="Flight Data Analyzer", layout="wide")
+
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -48,7 +51,7 @@ def _render_trajectory_tab(df_gps: pd.DataFrame, color_by: str) -> None:
     try:
         fig = plot_flight_path_3d(df_gps, output_html=None, auto_open=False, color_by=color_by)
         st.plotly_chart(fig, use_container_width=True)
-    except Exception as exc:
+    except ValueError as exc:
         st.error(f"Unable to render 3D trajectory: {exc}")
 
 
@@ -86,7 +89,8 @@ def _render_ai_tab(
                     df_imu=df_imu,
                 )
             st.session_state["ai_analysis"] = analysis
-        except Exception as exc:
+        except (ValueError, ImportError, RuntimeError) as exc:
+            LOGGER.exception("AI analysis generation failed")
             st.error(f"Failed to generate AI analysis: {exc}")
             return
 
@@ -108,20 +112,28 @@ def _load_data_from_sidebar(parser: BinaryDataParser) -> SidebarState:
         else:
             selected = st.selectbox("Select BIN file", data_files, format_func=lambda p: str(p))
             if st.button("Load Data", use_container_width=True):
-                data = parse_data_from_path(parser, str(selected))
-                source_label = str(selected)
-                st.session_state["loaded_data"] = data
-                st.session_state["loaded_source_label"] = source_label
-                st.session_state.pop("ai_analysis", None)
+                try:
+                    data = parse_data_from_path(parser, str(selected))
+                    source_label = str(selected)
+                    st.session_state["loaded_data"] = data
+                    st.session_state["loaded_source_label"] = source_label
+                    st.session_state.pop("ai_analysis", None)
+                except (FileNotFoundError, OSError, ValueError) as exc:
+                    LOGGER.exception("Failed to parse local BIN file")
+                    st.error(f"Failed to load local file: {exc}")
     else:
         uploaded = st.file_uploader("Upload a BIN file", type=["bin", "BIN"])
         if uploaded is not None:
             if st.button("Load Data", use_container_width=True):
-                data = parse_uploaded_bin(parser, uploaded)
-                source_label = uploaded.name
-                st.session_state["loaded_data"] = data
-                st.session_state["loaded_source_label"] = source_label
-                st.session_state.pop("ai_analysis", None)
+                try:
+                    data = parse_uploaded_bin(parser, uploaded)
+                    source_label = uploaded.name
+                    st.session_state["loaded_data"] = data
+                    st.session_state["loaded_source_label"] = source_label
+                    st.session_state.pop("ai_analysis", None)
+                except (OSError, ValueError) as exc:
+                    LOGGER.exception("Failed to parse uploaded BIN file")
+                    st.error(f"Failed to load uploaded file: {exc}")
 
     if source_label:
         st.caption(f"Current loaded file: {source_label}")
@@ -175,7 +187,8 @@ def main() -> None:
     try:
         telemetry: ProcessedTelemetry = prepare_telemetry_frames(analyzer, state.data, imu_index=state.imu_index)
 
-    except Exception as exc:
+    except (ValueError, KeyError) as exc:
+        LOGGER.exception("Telemetry preparation failed")
         st.error(f"Failed to process telemetry data: {exc}")
         return
 
