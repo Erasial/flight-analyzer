@@ -30,18 +30,31 @@ def _build_trajectory(df_gps: pd.DataFrame) -> pd.DataFrame:
 	return trajectory
 
 
-def _resolve_color_metric(trajectory: pd.DataFrame, color_by: str) -> tuple[np.ndarray, str, str]:
+def _resolve_speed_unit(speed_unit: str) -> tuple[float, str]:
+	unit = speed_unit.strip().lower()
+	if unit == "km/h":
+		return 3.6, "km/h"
+	return 1.0, "m/s"
+
+
+def _resolve_color_metric(
+	trajectory: pd.DataFrame,
+	color_by: str,
+	speed_unit: str,
+) -> tuple[np.ndarray, str, str, np.ndarray, np.ndarray, str]:
 	color_mode = color_by.strip().lower()
+	unit_factor, unit_label = _resolve_speed_unit(speed_unit)
+	ground_speed = trajectory["Spd"].to_numpy(dtype=float) * unit_factor
+	climb_rate = trajectory["ClimbRate"].to_numpy(dtype=float) * unit_factor
+
 	if color_mode == "ground":
-		return trajectory["Spd"].to_numpy(dtype=float), "Ground Speed (m/s)", "Ground Speed"
+		return ground_speed, f"Ground Speed ({unit_label})", "Ground Speed", ground_speed, climb_rate, unit_label
 
 	if color_mode == "vertical":
-		return trajectory["ClimbRate"].to_numpy(dtype=float), "Climb Rate (m/s)", "Climb Rate"
+		return climb_rate, f"Climb Rate ({unit_label})", "Climb Rate", ground_speed, climb_rate, unit_label
 
-	velocity_color = np.sqrt(
-		trajectory["Spd"].to_numpy(dtype=float) ** 2 + trajectory["ClimbRate"].to_numpy(dtype=float) ** 2
-	)
-	return velocity_color, "Total Speed (m/s)", "Total Speed"
+	velocity_color = np.sqrt(ground_speed**2 + climb_rate**2)
+	return velocity_color, f"Total Speed ({unit_label})", "Total Speed", ground_speed, climb_rate, unit_label
 
 
 def _build_figure(
@@ -53,6 +66,7 @@ def _build_figure(
 	velocity_color: np.ndarray,
 	color_title: str,
 	plot_title_suffix: str,
+	unit_label: str,
 ):
 	fig = go.Figure()
 	fig.add_trace(
@@ -89,9 +103,9 @@ def _build_figure(
 				"E: %{x:.2f} m<br>"
 				"N: %{y:.2f} m<br>"
 				"U: %{z:.2f} m<br>"
-				"Ground Speed: %{customdata[0]:.2f} m/s<br>"
-				"Climb Rate: %{customdata[1]:.2f} m/s<br>"
-				"Color Metric: %{customdata[2]:.2f} m/s<extra></extra>"
+				f"Ground Speed: %{{customdata[0]:.2f}} {unit_label}<br>"
+				f"Climb Rate: %{{customdata[1]:.2f}} {unit_label}<br>"
+				f"Color Metric: %{{customdata[2]:.2f}} {unit_label}<extra></extra>"
 			),
 		)
 	)
@@ -136,19 +150,37 @@ def plot_flight_path_3d(
 	output_html: str = "flight_trajectory_enu.html",
 	auto_open: bool = False,
 	color_by: str = "combined",
+	speed_unit: str = "m/s",
 ):
 	"""Build an interactive Plotly 3D trajectory with velocity-based dynamic coloring."""
 	_validate_plot_input(df_gps)
 	trajectory = _build_trajectory(df_gps)
-	velocity_color, color_title, plot_title_suffix = _resolve_color_metric(trajectory, color_by)
+	(
+		velocity_color,
+		color_title,
+		plot_title_suffix,
+		ground_speed,
+		climb_rate,
+		unit_label,
+	) = _resolve_color_metric(trajectory, color_by, speed_unit)
 
 	x = np.ravel(trajectory["East"].to_numpy(dtype=float))
 	y = np.ravel(trajectory["North"].to_numpy(dtype=float))
 	z = np.ravel(trajectory["Up"].to_numpy(dtype=float))
-	ground_speed = np.ravel(trajectory["Spd"].to_numpy(dtype=float))
-	climb_rate = np.ravel(trajectory["ClimbRate"].to_numpy(dtype=float))
+	ground_speed = np.ravel(ground_speed)
+	climb_rate = np.ravel(climb_rate)
 
-	fig = _build_figure(x, y, z, ground_speed, climb_rate, velocity_color, color_title, plot_title_suffix)
+	fig = _build_figure(
+		x,
+		y,
+		z,
+		ground_speed,
+		climb_rate,
+		velocity_color,
+		color_title,
+		plot_title_suffix,
+		unit_label,
+	)
 
 	if output_html:
 		fig.write_html(output_html, include_plotlyjs="cdn", auto_open=auto_open)

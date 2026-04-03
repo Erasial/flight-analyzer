@@ -30,6 +30,7 @@ class SidebarState:
     source_label: str
     imu_index: int
     color_by: str
+    speed_unit: str
     gemini_api_key: str
 
 
@@ -41,15 +42,39 @@ def _format_metric(value: float) -> str:
     return str(value)
 
 
-def _render_summary_tab(metrics: dict[str, float]) -> None:
+def _convert_speed_value(value: float, speed_unit: str) -> float:
+    if speed_unit == "km/h":
+        return value * 3.6
+    return value
+
+
+def _format_metrics_for_display(metrics: dict[str, float], speed_unit: str) -> dict[str, float]:
+    display_metrics: dict[str, float] = {}
+    for key, value in metrics.items():
+        if "(m/s)" in key:
+            display_key = key.replace("(m/s)", f"({speed_unit})")
+            display_metrics[display_key] = _convert_speed_value(float(value), speed_unit)
+            continue
+        display_metrics[key] = value
+    return display_metrics
+
+
+def _render_summary_tab(metrics: dict[str, float], speed_unit: str) -> None:
+    display_metrics = _format_metrics_for_display(metrics, speed_unit)
     cols = st.columns(5)
-    for idx, (key, value) in enumerate(metrics.items()):
+    for idx, (key, value) in enumerate(display_metrics.items()):
         cols[idx % 5].metric(key, _format_metric(value))
 
 
-def _render_trajectory_tab(df_gps: pd.DataFrame, color_by: str) -> None:
+def _render_trajectory_tab(df_gps: pd.DataFrame, color_by: str, speed_unit: str) -> None:
     try:
-        fig = plot_flight_path_3d(df_gps, output_html=None, auto_open=False, color_by=color_by)
+        fig = plot_flight_path_3d(
+            df_gps,
+            output_html=None,
+            auto_open=False,
+            color_by=color_by,
+            speed_unit=speed_unit,
+        )
         st.plotly_chart(fig, width="stretch")
     except ValueError as exc:
         st.error(f"Unable to render 3D trajectory: {exc}")
@@ -147,6 +172,7 @@ def _load_data_from_sidebar(parser: BinaryDataParser) -> SidebarState:
 
     st.header("Filters")
     imu_index = st.number_input("IMU Module Index", min_value=0, max_value=9, value=0, step=1)
+    speed_unit = st.selectbox("Speed Unit", ["m/s", "km/h"], index=0)
     color_by = st.selectbox("3D Color Mode", ["combined", "ground", "vertical"], index=0)
 
     st.header("AI Assistant")
@@ -162,6 +188,7 @@ def _load_data_from_sidebar(parser: BinaryDataParser) -> SidebarState:
         source_label=source_label,
         imu_index=int(imu_index),
         color_by=color_by,
+        speed_unit=speed_unit,
         gemini_api_key=gemini_api_key.strip(),
     )
 
@@ -204,10 +231,10 @@ def main() -> None:
     tabs = st.tabs(["Summary", "3D Trajectory", "DataFrames", "AI Analysis"])
 
     with tabs[0]:
-        _render_summary_tab(metrics)
+        _render_summary_tab(metrics, state.speed_unit)
 
     with tabs[1]:
-        _render_trajectory_tab(df_gps, state.color_by)
+        _render_trajectory_tab(df_gps, state.color_by, state.speed_unit)
 
     with tabs[2]:
         _render_dataframes_tab(df_gps, df_imu)
