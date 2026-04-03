@@ -4,7 +4,7 @@ import plotly.graph_objects as go
 
 
 def _validate_plot_input(df_gps: pd.DataFrame) -> None:
-	required_columns = {"Eeast", "North", "Up"}
+	required_columns = {"East", "North", "Up"}
 	missing = required_columns - set(df_gps.columns)
 	if missing:
 		raise ValueError(f"df_gps is missing required ENU columns: {sorted(missing)}")
@@ -14,7 +14,7 @@ def _validate_plot_input(df_gps: pd.DataFrame) -> None:
 
 
 def _build_trajectory(df_gps: pd.DataFrame) -> pd.DataFrame:
-	e = pd.to_numeric(df_gps["Eeast"], errors="coerce")
+	e = pd.to_numeric(df_gps["East"], errors="coerce")
 	n = pd.to_numeric(df_gps["North"], errors="coerce")
 	u = pd.to_numeric(df_gps["Up"], errors="coerce")
 	spd = pd.to_numeric(df_gps["Spd"], errors="coerce")
@@ -22,7 +22,7 @@ def _build_trajectory(df_gps: pd.DataFrame) -> pd.DataFrame:
 	climb = -vz  # ArduPilot convention: negative VZ means climbing.
 
 	trajectory = pd.DataFrame(
-		{"Eeast": e, "North": n, "Up": u, "Spd": spd, "VZ": vz, "ClimbRate": climb}
+		{"East": e, "North": n, "Up": u, "Spd": spd, "VZ": vz, "ClimbRate": climb}
 	).dropna()
 	if trajectory.empty or len(trajectory) < 2:
 		raise ValueError("df_gps has no valid ENU points to plot")
@@ -142,7 +142,7 @@ def plot_flight_path_3d(
 	trajectory = _build_trajectory(df_gps)
 	velocity_color, color_title, plot_title_suffix = _resolve_color_metric(trajectory, color_by)
 
-	x = np.ravel(trajectory["Eeast"].to_numpy(dtype=float))
+	x = np.ravel(trajectory["East"].to_numpy(dtype=float))
 	y = np.ravel(trajectory["North"].to_numpy(dtype=float))
 	z = np.ravel(trajectory["Up"].to_numpy(dtype=float))
 	ground_speed = np.ravel(trajectory["Spd"].to_numpy(dtype=float))
