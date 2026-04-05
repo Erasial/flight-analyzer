@@ -1,6 +1,6 @@
 import os
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +15,7 @@ from app.services.analyzer import AnalysisService
 class ProcessedTelemetry:
     df_gps: pd.DataFrame
     df_imu: pd.DataFrame
+    df_att: pd.DataFrame = field(default_factory=pd.DataFrame)
 
 
 def list_local_bin_files(data_dir: str = "data") -> list[Path]:
@@ -45,17 +46,27 @@ def prepare_telemetry_frames(
 ) -> ProcessedTelemetry:
     df_gps = dataframes.get("GPS", pd.DataFrame())
     df_imu = dataframes.get("IMU", pd.DataFrame())
+    df_att = dataframes.get("ATT", pd.DataFrame())
 
     if df_gps.empty:
-        return ProcessedTelemetry(df_gps=df_gps, df_imu=df_imu)
+        return ProcessedTelemetry(df_gps=df_gps, df_imu=df_imu, df_att=df_att)
 
+    # Improved GPS processing: filter outliers in speed/altitude if necessary
     df_gps = analyzer.filter_gps_low_quality_samples(df_gps)
+    df_gps = analyzer.filter_outliers(df_gps, 'Alt', threshold=5.0) # ArduPilot Alt can jump
     df_gps = wgs84_to_enu(df_gps)
 
     if not df_imu.empty:
         df_imu = analyzer.filter_imu_module(df_imu, imu_index=imu_index)
+        # Smooth IMU data as it is often noisy
+        for col in ['AccX', 'AccY', 'AccZ']:
+            if col in df_imu.columns:
+                df_imu = analyzer.smooth_signal(df_imu, col, window=5)
 
-    return ProcessedTelemetry(df_gps=df_gps, df_imu=df_imu)
+    if not df_att.empty:
+        df_att = analyzer.process_attitude(df_att)
+
+    return ProcessedTelemetry(df_gps=df_gps, df_imu=df_imu, df_att=df_att)
 
 
 def collect_metrics(analyzer: AnalysisService, df_gps: pd.DataFrame, df_imu: pd.DataFrame) -> dict[str, float]:

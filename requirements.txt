@@ -4,3 +4,6 @@ pymavlink==2.4.49
 plotly==6.6.0
 streamlit==1.56.0
 google-generativeai==0.8.6
+fastapi==0.135.3
+uvicorn==0.43.0
+python-multipart==0.0.22

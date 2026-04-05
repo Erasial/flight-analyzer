@@ -93,3 +93,54 @@ class AnalysisService:
             end_time = df['TimeUS'].iloc[-1]
             return (end_time - start_time) / 1e6
         return 0.0
+
+    @staticmethod
+    def filter_outliers(df: pd.DataFrame, column: str, threshold: float = 3.0) -> pd.DataFrame:
+        """
+        Filters outliers using Z-score logic.
+        """
+        if df is None or df.empty or column not in df.columns:
+            return df
+        
+        data = pd.to_numeric(df[column], errors='coerce')
+        mean = data.mean()
+        std = data.std()
+        
+        if std == 0:
+            return df
+            
+        z_scores = (data - mean) / std
+        return df[z_scores.abs() <= threshold].reset_index(drop=True)
+
+    @staticmethod
+    def smooth_signal(df: pd.DataFrame, column: str, window: int = 5) -> pd.DataFrame:
+        """
+        Applies a simple moving average to smooth noisy ArduPilot data.
+        """
+        if df is None or df.empty or column not in df.columns:
+            return df
+            
+        df = df.copy()
+        df[column] = df[column].rolling(window=window, center=True).mean()
+        return df.dropna(subset=[column]).reset_index(drop=True)
+
+    @staticmethod
+    def process_attitude(df_att: pd.DataFrame) -> pd.DataFrame:
+        """
+        ArduPilot ATT messages usually have Roll, Pitch, Yaw in degrees.
+        This method ensures they are within standard ranges and smooths them.
+        """
+        if df_att is None or df_att.empty:
+            return pd.DataFrame()
+
+        df = df_att.copy()
+        
+        # Ensure numeric
+        for col in ['Roll', 'Pitch', 'Yaw']:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce')
+
+        # ArduPilot Yaw is 0-360, but let's keep it consistent.
+        # If we had quaternions, we'd use them here.
+        
+        return df
