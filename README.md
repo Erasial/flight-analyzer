@@ -1,47 +1,82 @@
-## Flight Data Analyzer
+## Аналізатор польотних даних
 
-Streamlit app for parsing ArduPilot `.BIN` logs, calculating flight metrics, and visualizing 3D trajectory data.
+Веб-застосунок на Streamlit для розбору логів ArduPilot `.BIN`, обчислення метрик польоту, візуалізації 3D-траєкторії та формування звітів.
 
-## Requirements
+## Чому обрано саме цей стек
 
-Dependencies are listed in `requirements.txt`:
+- `pymavlink`: найприродніший вибір для парсингу ArduPilot/MAVLink логів, бо напряму працює з форматом телеметрії.
+- `pandas`: ефективні табличні перетворення, фільтрація, агрегації і підготовка даних для метрик/графіків.
+- `numpy`: швидкі чисельні обчислення (тригонометрія, інтегрування, векторні формули, геометричні перетворення).
+- `plotly`: інтерактивні 2D/3D-графіки (траєкторія, порівняння швидкостей, hover-дані, керування масштабом).
+- `streamlit`: швидкий спосіб зібрати аналітичний UI без важкого фронтенду.
+- `google-generativeai`: генерація текстового підсумку польоту на основі обчислених метрик.
+- `reportlab` + `matplotlib`: стабільний експорт PDF зі структурованими таблицями та графічними сніпетами.
 
-- `pandas`
-- `numpy`
-- `pymavlink`
-- `plotly`
-- `streamlit`
-- `google-generativeai`
+Цей стек добре закриває весь конвеєр задач: **парсинг -> обробка -> візуалізація -> аналітичний висновок -> експорт звіту**.
 
-Install all requirements:
+## Покроковий запуск
+
+1. Перейдіть у корінь проєкту:
+
+```bash
+cd /path/to/test_task_challenge
+```
+
+2. Створіть та активуйте віртуальне середовище:
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+```
+
+3. Встановіть залежності:
 
 ```bash
 pip install -r requirements.txt
 ```
 
-## Run Streamlit
-
-```bash
-PYTHONPATH=. streamlit run web/streamlit_app.py
-```
-
-## AI Assistant (Gemini)
-
-- Get a Gemini API key from Google AI Studio.
-- Provide the key in the sidebar `Gemini API Key` field, or via environment variable:
+4. (Опційно) додайте Gemini API ключ для AI-аналізу:
 
 ```bash
 export GEMINI_API_KEY="your_key_here"
 ```
 
-- In the `AI Analysis` tab, click `Generate AI Analysis`.
-- The response is generated in English from flight metrics and telemetry summary.
+5. Запустіть застосунок:
 
-## Technologies Used
+```bash
+PYTHONPATH=. streamlit run web/streamlit_app.py
+```
 
-- `pymavlink`: Reads and parses ArduPilot MAVLink/BIN telemetry logs.
-- `pandas`: Stores telemetry as DataFrames and powers data filtering/analysis.
-- `numpy`: Handles numeric computations used in trajectory/math utilities.
-- `plotly`: Renders the interactive 3D flight trajectory visualization.
-- `streamlit`: Provides the web UI for inputs, metrics, tables, and charts.
-- `google-generativeai`: Calls Gemini API for automatic textual flight analysis.
+6. У UI:
+- оберіть локальний `.BIN` або завантажте файл,
+- натисніть `Завантажити дані`,
+- перегляньте вкладки `Підсумок`, `3D-траєкторія`, `Дрейф швидкості`,
+- за потреби сформуйте `AI-аналіз` і експортуйте `CSV/PDF`.
+
+## 3D поверхня землі
+
+- 3D-траєкторія може відображати рельєф через Open-Elevation API.
+- За замовчуванням використовується Open-Elevation (потрібен інтернет).
+- Відображення поверхні можна вимкнути у бічній панелі.
+
+## Експорт
+
+- У вкладці `Підсумок` доступно:
+	- експорт метрик у `CSV`;
+	- експорт повного звіту у `PDF`.
+- PDF містить:
+	- таблицю метрик;
+	- зведення телеметрії;
+	- AI-аналіз (якщо його було згенеровано в поточній сесії);
+	- приклад графіка дрейфу швидкості;
+	- приклад 3D-траєкторії з фіксованого ракурсу.
+
+## AI-асистент (Gemini)
+
+- Вкажіть `Gemini API ключ` у бічній панелі або через `GEMINI_API_KEY`.
+- На вкладці `AI-аналіз` натисніть `Згенерувати AI-аналіз`.
+- Відповідь генерується українською мовою на основі метрик та телеметрії.
+
+## Теоретичне обґрунтування
+
+- Детальне математичне пояснення див. у `THEORY.md`.

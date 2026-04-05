@@ -4,10 +4,12 @@ import os
 
 import pandas as pd
 import streamlit as st
+import plotly.graph_objects as go
 
 from app.parsers.binary import BinaryDataParser
 from app.services.ai_assistant import GeminiFlightAssistant
 from app.services.analyzer import AnalysisService
+from app.services.reporting import export_full_report_pdf_bytes, export_metrics_csv_bytes
 from app.services.pipeline import (
     collect_metrics,
     filter_gps_by_timeframe,
@@ -20,7 +22,7 @@ from app.services.pipeline import (
 from visualization.flight_plotter import plot_flight_path_3d
 
 
-st.set_page_config(page_title="Flight Data Analyzer", layout="wide")
+st.set_page_config(page_title="Аналізатор польотних даних", layout="wide")
 
 LOGGER = logging.getLogger(__name__)
 
@@ -32,19 +34,34 @@ class SidebarState:
     imu_index: int
     color_by: str
     speed_unit: str
-    gemini_api_key: str
+    show_ground: bool
+
+
+METRIC_LABELS_UA = {
+    "Flight Duration (s)": "Тривалість польоту (с)",
+    "Distance Traveled (m)": "Пройдена дистанція (м)",
+    "Elevation Gain (m)": "Набір висоти (м)",
+    "Max Horizontal Speed (m/s)": "Макс. горизонтальна швидкість (м/с)",
+    "Max Vertical Speed (m/s)": "Макс. вертикальна швидкість (м/с)",
+    "Max Altitude (m)": "Макс. висота (м)",
+    "Max Acc X (m/s^2)": "Макс. прискорення X (м/с^2)",
+    "Max Acc Y (m/s^2)": "Макс. прискорення Y (м/с^2)",
+    "Max Acc Z (m/s^2)": "Макс. прискорення Z (м/с^2)",
+    "GPS Sample Rate (Hz)": "Частота GPS (Гц)",
+    "IMU Sample Rate (Hz)": "Частота IMU (Гц)",
+}
 
 
 def _format_metric(value: float) -> str:
     if value is None:
-        return "N/A"
+        return "Н/Д"
     if isinstance(value, (float, int)):
         return f"{value:.2f}"
     return str(value)
 
 
 def _convert_speed_value(value: float, speed_unit: str) -> float:
-    if speed_unit == "km/h":
+    if speed_unit == "км/год":
         return value * 3.6
     return value
 
@@ -52,11 +69,12 @@ def _convert_speed_value(value: float, speed_unit: str) -> float:
 def _format_metrics_for_display(metrics: dict[str, float], speed_unit: str) -> dict[str, float]:
     display_metrics: dict[str, float] = {}
     for key, value in metrics.items():
+        localized_key = METRIC_LABELS_UA.get(key, key)
         if "(m/s)" in key:
-            display_key = key.replace("(m/s)", f"({speed_unit})")
+            display_key = localized_key.replace("(м/с)", f"({speed_unit})")
             display_metrics[display_key] = _convert_speed_value(float(value), speed_unit)
             continue
-        display_metrics[key] = value
+        display_metrics[localized_key] = value
     return display_metrics
 
 
@@ -65,6 +83,46 @@ def _render_summary_tab(metrics: dict[str, float], speed_unit: str) -> None:
     cols = st.columns(5)
     for idx, (key, value) in enumerate(display_metrics.items()):
         cols[idx % 5].metric(key, _format_metric(value))
+
+
+def _render_export_section(
+    metrics: dict[str, float],
+    df_gps: pd.DataFrame,
+    df_imu: pd.DataFrame,
+    source_label: str,
+    speed_unit: str,
+    ai_analysis_text: str | None,
+) -> None:
+    with st.expander("Експорт", expanded=False):
+        left, right = st.columns(2)
+
+        csv_bytes = export_metrics_csv_bytes(metrics)
+        left.download_button(
+            label="Метрики CSV",
+            data=csv_bytes,
+            file_name="flight_metrics.csv",
+            mime="text/csv",
+            width="content",
+        )
+
+        try:
+            pdf_bytes = export_full_report_pdf_bytes(
+                metrics=metrics,
+                df_gps=df_gps,
+                df_imu=df_imu,
+                source_label=source_label,
+                speed_unit=speed_unit,
+                ai_analysis_text=ai_analysis_text,
+            )
+            right.download_button(
+                label="Повний звіт PDF",
+                data=pdf_bytes,
+                file_name="flight_report.pdf",
+                mime="application/pdf",
+                width="content",
+            )
+        except ImportError as exc:
+            st.info(str(exc))
 
 
 def _render_timeframe_filter(df_gps: pd.DataFrame) -> tuple[float, float] | None:
@@ -81,7 +139,7 @@ def _render_timeframe_filter(df_gps: pd.DataFrame) -> tuple[float, float] | None
         return None
 
     return st.slider(
-        "Graph Timeframe (s)",
+        "Часовий інтервал графіків (с)",
         min_value=0.0,
         max_value=max_seconds,
         value=(0.0, max_seconds),
@@ -93,14 +151,21 @@ def _render_trajectory_tab(
     df_gps: pd.DataFrame,
     color_by: str,
     speed_unit: str,
+    show_ground: bool,
     timeframe_window: tuple[float, float] | None,
 ) -> None:
+    stable_alt_origin = None
+    if "Alt" in df_gps.columns:
+        alt_series = pd.to_numeric(df_gps["Alt"], errors="coerce").dropna()
+        if not alt_series.empty:
+            stable_alt_origin = float(alt_series.iloc[0])
+
     filtered_df = df_gps
     if timeframe_window is not None:
         filtered_df = filter_gps_by_timeframe(df_gps, timeframe_window[0], timeframe_window[1])
 
     if len(filtered_df) < 2:
-        st.warning("Selected timeframe does not contain enough points to render trajectory.")
+        st.warning("У вибраному інтервалі недостатньо точок для побудови траєкторії.")
         return
 
     try:
@@ -110,49 +175,131 @@ def _render_trajectory_tab(
             auto_open=False,
             color_by=color_by,
             speed_unit=speed_unit,
+            show_ground=show_ground,
+            terrain_altitude_origin=stable_alt_origin,
         )
         st.plotly_chart(fig, width="stretch")
     except ValueError as exc:
-        st.error(f"Unable to render 3D trajectory: {exc}")
+        st.error(f"Не вдалося побудувати 3D-траєкторію: {exc}")
 
 
 def _render_dataframes_tab(df_gps: pd.DataFrame, df_imu: pd.DataFrame) -> None:
-    st.subheader("GPS Data")
+    st.subheader("GPS-дані")
     st.dataframe(df_gps, width="stretch", height=300)
 
-    st.subheader("IMU Data")
+    st.subheader("IMU-дані")
     if df_imu.empty:
-        st.warning("No IMU rows available for the selected module index.")
+        st.warning("Для вибраного індексу модуля IMU немає рядків.")
     else:
         st.dataframe(df_imu, width="stretch", height=300)
+
+
+def _render_speed_drift_tab(
+    df_gps: pd.DataFrame,
+    df_imu: pd.DataFrame,
+    speed_unit: str,
+    timeframe_window: tuple[float, float] | None,
+) -> None:
+    if "Spd" not in df_gps.columns or "TimeUS" not in df_gps.columns:
+        st.warning("Порівняння швидкостей недоступне: для GPS потрібні колонки 'Spd' і 'TimeUS'.")
+        return
+
+    if "VelAccNorm" not in df_imu.columns or "TimeUS" not in df_imu.columns:
+        st.warning("Швидкість з акселерометра недоступна: для IMU потрібні Acc/Gyro поля та TimeUS.")
+        return
+
+    gps = df_gps.copy()
+    imu = df_imu.copy()
+    gps["TimeUS"] = pd.to_numeric(gps["TimeUS"], errors="coerce")
+    gps["Spd"] = pd.to_numeric(gps["Spd"], errors="coerce")
+    imu["TimeUS"] = pd.to_numeric(imu["TimeUS"], errors="coerce")
+    imu["VelAccNorm"] = pd.to_numeric(imu["VelAccNorm"], errors="coerce")
+
+    gps = gps.dropna(subset=["TimeUS", "Spd"]).sort_values("TimeUS")
+    imu = imu.dropna(subset=["TimeUS", "VelAccNorm"]).sort_values("TimeUS")
+    if gps.empty or imu.empty:
+        st.warning("Недостатньо узгоджених даних для відображення порівняння дрейфу.")
+        return
+
+    if timeframe_window is not None:
+        start_s, end_s = timeframe_window
+        gps = filter_gps_by_timeframe(gps, start_s, end_s)
+        start_us = float(gps["TimeUS"].iloc[0]) if not gps.empty else None
+        if start_us is not None:
+            imu_rel = (imu["TimeUS"] - start_us) / 1e6
+            lower = min(start_s, end_s)
+            upper = max(start_s, end_s)
+            imu = imu.loc[(imu_rel >= lower) & (imu_rel <= upper)]
+        if gps.empty or imu.empty:
+            st.warning("У вибраному інтервалі немає перетину сигналів швидкості GPS та IMU.")
+            return
+
+    t0 = min(float(gps["TimeUS"].iloc[0]), float(imu["TimeUS"].iloc[0]))
+    gps_t = (gps["TimeUS"] - t0) / 1e6
+    imu_t = (imu["TimeUS"] - t0) / 1e6
+
+    unit_factor = 3.6 if speed_unit == "км/год" else 1.0
+    gps_speed = gps["Spd"] * unit_factor
+    imu_speed = imu["VelAccNorm"] * unit_factor
+
+    fig = go.Figure()
+    fig.add_trace(
+        go.Scatter(
+            x=gps_t,
+            y=gps_speed,
+            mode="lines",
+            name=f"Швидкість GPS ({speed_unit})",
+            line={"color": "#1f77b4", "width": 2},
+        )
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=imu_t,
+            y=imu_speed,
+            mode="lines",
+            name=f"Швидкість з акселерометра ({speed_unit}) [із дрейфом]",
+            line={"color": "#d62728", "width": 2},
+        )
+    )
+    fig.update_layout(
+        title="Порівняння швидкостей: GPS vs інтегрування акселерометра",
+        xaxis_title="Час (с)",
+        yaxis_title=f"Швидкість ({speed_unit})",
+        legend={"x": 0.01, "y": 0.99, "yanchor": "top"},
+        margin={"l": 24, "r": 12, "b": 24, "t": 44},
+    )
+
+    st.plotly_chart(fig, width="stretch")
+    st.caption("Примітка: швидкість, отримана інтегруванням акселерометра, накопичує дрейф з часом.")
 
 
 def _render_ai_tab(
     metrics: dict[str, float],
     df_gps: pd.DataFrame,
     df_imu: pd.DataFrame,
-    state: SidebarState,
+    gemini_api_key: str,
 ) -> None:
-    st.subheader("AI Flight Analysis (Gemini)")
-    st.caption("The report is generated in English from flight metrics and telemetry summary.")
+    st.subheader("AI-аналіз польоту (Gemini)")
+    st.caption("Звіт формується українською мовою на основі метрик польоту та зведення телеметрії.")
 
-    if not state.gemini_api_key:
-        st.info("Provide a Gemini API key in the sidebar (or via GEMINI_API_KEY environment variable).")
+    if not gemini_api_key:
+        st.info("Вкажіть Gemini API ключ у бічній панелі (або через змінну середовища GEMINI_API_KEY).")
         return
 
-    if st.button("Generate AI Analysis", width="stretch"):
+    if st.button("Згенерувати AI-аналіз", width="stretch"):
         try:
-            assistant = GeminiFlightAssistant(api_key=state.gemini_api_key, model_name="gemini-2.5-flash")
-            with st.spinner("Generating analysis report..."):
+            assistant = GeminiFlightAssistant(api_key=gemini_api_key, model_name="gemini-2.5-flash")
+            with st.spinner("Генерується аналітичний звіт..."):
                 analysis = assistant.generate_analysis(
                     metrics=metrics,
                     df_gps=df_gps,
                     df_imu=df_imu,
                 )
             st.session_state["ai_analysis"] = analysis
+            st.rerun()
         except (ValueError, ImportError, RuntimeError) as exc:
             LOGGER.exception("AI analysis generation failed")
-            st.error(f"Failed to generate AI analysis: {exc}")
+            st.error(f"Не вдалося згенерувати AI-аналіз: {exc}")
             return
 
     existing = st.session_state.get("ai_analysis")
@@ -161,18 +308,18 @@ def _render_ai_tab(
 
 
 def _load_data_from_sidebar(parser: BinaryDataParser) -> SidebarState:
-    source_mode = st.radio("Data source", ["Local file", "Upload BIN"], index=0)
+    source_mode = st.radio("Джерело даних", ["Локальний файл", "Завантажити BIN"], index=0)
 
     data = st.session_state.get("loaded_data")
     source_label = st.session_state.get("loaded_source_label", "")
 
-    if source_mode == "Local file":
+    if source_mode == "Локальний файл":
         data_files = list_local_bin_files("data")
         if not data_files:
-            st.warning("No .BIN files found in the data/ directory.")
+            st.warning("У директорії data/ не знайдено .BIN файлів.")
         else:
-            selected = st.selectbox("Select BIN file", data_files, format_func=lambda p: str(p))
-            if st.button("Load Data", width="stretch"):
+            selected = st.selectbox("Оберіть BIN-файл", data_files, format_func=lambda p: str(p))
+            if st.button("Завантажити дані", width="stretch"):
                 try:
                     data = parse_data_from_path(parser, str(selected))
                     source_label = str(selected)
@@ -181,11 +328,11 @@ def _load_data_from_sidebar(parser: BinaryDataParser) -> SidebarState:
                     st.session_state.pop("ai_analysis", None)
                 except (FileNotFoundError, OSError, ValueError) as exc:
                     LOGGER.exception("Failed to parse local BIN file")
-                    st.error(f"Failed to load local file: {exc}")
+                    st.error(f"Не вдалося завантажити локальний файл: {exc}")
     else:
-        uploaded = st.file_uploader("Upload a BIN file", type=["bin", "BIN"])
+        uploaded = st.file_uploader("Завантажте BIN-файл", type=["bin", "BIN"])
         if uploaded is not None:
-            if st.button("Load Data", width="stretch"):
+            if st.button("Завантажити дані", width="stretch"):
                 try:
                     data = parse_uploaded_bin(parser, uploaded)
                     source_label = uploaded.name
@@ -194,30 +341,23 @@ def _load_data_from_sidebar(parser: BinaryDataParser) -> SidebarState:
                     st.session_state.pop("ai_analysis", None)
                 except (OSError, ValueError) as exc:
                     LOGGER.exception("Failed to parse uploaded BIN file")
-                    st.error(f"Failed to load uploaded file: {exc}")
+                    st.error(f"Не вдалося обробити завантажений файл: {exc}")
 
     if source_label:
-        st.caption(f"Current loaded file: {source_label}")
+        st.caption(f"Поточний завантажений файл: {source_label}")
 
-    if st.button("Clear Loaded Data", width="stretch"):
+    if st.button("Очистити завантажені дані", width="stretch"):
         st.session_state.pop("loaded_data", None)
         st.session_state.pop("loaded_source_label", None)
         st.session_state.pop("ai_analysis", None)
         data = None
         source_label = ""
 
-    st.header("Filters")
-    imu_index = st.number_input("IMU Module Index", min_value=0, max_value=9, value=0, step=1)
-    speed_unit = st.selectbox("Speed Unit", ["m/s", "km/h"], index=0)
-    color_by = st.selectbox("3D Color Mode", ["combined", "ground", "vertical", "time"], index=0)
-
-    st.header("AI Assistant")
-    gemini_api_key = st.text_input(
-        "Gemini API Key",
-        value=os.getenv("GEMINI_API_KEY", ""),
-        type="password",
-        help="The key is not stored in code. You can also set GEMINI_API_KEY in your environment.",
-    )
+    st.header("Фільтри")
+    imu_index = st.number_input("Індекс модуля IMU", min_value=0, max_value=9, value=0, step=1)
+    speed_unit = st.selectbox("Одиниця швидкості", ["м/с", "км/год"], index=0)
+    color_by = st.selectbox("Режим кольору 3D", ["combined", "ground", "vertical", "time"], index=0)
+    show_ground = st.checkbox("Показувати поверхню землі", value=True)
 
     return SidebarState(
         data=data,
@@ -225,62 +365,86 @@ def _load_data_from_sidebar(parser: BinaryDataParser) -> SidebarState:
         imu_index=int(imu_index),
         color_by=color_by,
         speed_unit=speed_unit,
-        gemini_api_key=gemini_api_key.strip(),
+        show_ground=show_ground,
     )
 
 
 def main() -> None:
-    st.title("Flight Data Analyzer")
-    st.caption("Interactive telemetry analysis from ArduPilot BIN logs")
+    st.title("Аналізатор польотних даних")
+    st.caption("Інтерактивний аналіз телеметрії з логів ArduPilot BIN")
 
     parser = BinaryDataParser()
     analyzer = AnalysisService()
 
     with st.sidebar:
-        st.header("Inputs")
+        st.header("Вхідні дані")
         state = _load_data_from_sidebar(parser)
 
     if state.data is None:
-        st.info("Select a source and click 'Load Data' to begin.")
+        st.info("Оберіть джерело і натисніть 'Завантажити дані', щоб почати.")
         return
 
     if state.source_label:
-        st.success(f"Loaded: {state.source_label}")
+        st.success(f"Завантажено: {state.source_label}")
 
     try:
         telemetry: ProcessedTelemetry = prepare_telemetry_frames(analyzer, state.data, imu_index=state.imu_index)
 
     except (ValueError, KeyError) as exc:
         LOGGER.exception("Telemetry preparation failed")
-        st.error(f"Failed to process telemetry data: {exc}")
+        st.error(f"Не вдалося обробити телеметрію: {exc}")
         return
 
     df_gps = telemetry.df_gps
     df_imu = telemetry.df_imu
 
     if df_gps.empty:
-        st.error("GPS data is missing or empty in this log file.")
+        st.error("GPS-дані відсутні або порожні у цьому логу.")
         return
 
     with st.sidebar:
-        st.subheader("Graph Filters")
+        st.subheader("Часовий інтервал")
         timeframe_window = _render_timeframe_filter(df_gps)
+        st.header("AI-асистент")
+        gemini_api_key = st.text_input(
+            "Gemini API ключ",
+            value=os.getenv("GEMINI_API_KEY", ""),
+            type="password",
+            help="Ключ не зберігається в коді. Також можна використати змінну середовища GEMINI_API_KEY.",
+        ).strip()
 
     metrics = collect_metrics(analyzer, df_gps, df_imu)
 
-    tabs = st.tabs(["Summary", "3D Trajectory", "DataFrames", "AI Analysis"])
+    tabs = st.tabs(["Підсумок", "3D-траєкторія", "Дрейф швидкості", "Таблиці даних", "AI-аналіз"])
 
     with tabs[0]:
         _render_summary_tab(metrics, state.speed_unit)
+        _render_export_section(
+            metrics,
+            df_gps,
+            df_imu,
+            state.source_label,
+            state.speed_unit,
+            st.session_state.get("ai_analysis"),
+        )
 
     with tabs[1]:
-        _render_trajectory_tab(df_gps, state.color_by, state.speed_unit, timeframe_window)
+        _render_trajectory_tab(
+            df_gps,
+            state.color_by,
+            state.speed_unit,
+            state.show_ground,
+            timeframe_window,
+        )
 
     with tabs[2]:
-        _render_dataframes_tab(df_gps, df_imu)
+        _render_speed_drift_tab(df_gps, df_imu, state.speed_unit, timeframe_window)
 
     with tabs[3]:
-        _render_ai_tab(metrics, df_gps, df_imu, state)
+        _render_dataframes_tab(df_gps, df_imu)
+
+    with tabs[4]:
+        _render_ai_tab(metrics, df_gps, df_imu, gemini_api_key)
 
 
 if __name__ == "__main__":

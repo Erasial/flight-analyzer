@@ -6,6 +6,7 @@ import pandas as pd
 
 from app.services.analyzer import AnalysisService
 from app.services.pipeline import (
+    _integrate_imu_velocity,
     collect_metrics,
     filter_gps_by_timeframe,
     list_local_bin_files,
@@ -42,9 +43,14 @@ class TestPipeline(unittest.TestCase):
             ),
             "IMU": pd.DataFrame(
                 {
-                    "I": [0, 1, 0],
-                    "TimeUS": [1, 2, 3],
-                    "AccX": [1.0, 5.0, 3.0],
+                    "I": [0, 1, 0, 0, 0, 0, 0],
+                    "TimeUS": [1, 2, 3, 4, 5, 6, 7],
+                    "AccX": [1.0, 5.0, 3.0, 3.1, 3.2, 3.3, 3.4],
+                    "AccY": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                    "AccZ": [9.80665, 9.80665, 9.80665, 9.80665, 9.80665, 9.80665, 9.80665],
+                    "GyrX": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                    "GyrY": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                    "GyrZ": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
                 }
             ),
         }
@@ -55,6 +61,26 @@ class TestPipeline(unittest.TestCase):
         self.assertIn("North", telemetry.df_gps.columns)
         self.assertIn("Up", telemetry.df_gps.columns)
         self.assertTrue((telemetry.df_imu["I"] == 0).all())
+
+    def test_integrate_imu_velocity_adds_velocity_columns(self) -> None:
+        df_imu = pd.DataFrame(
+            {
+                "TimeUS": [0, 1_000_000, 2_000_000, 3_000_000],
+                "AccX": [0.0, 0.0, 0.0, 0.0],
+                "AccY": [0.0, 0.0, 0.0, 0.0],
+                "AccZ": [9.80665, 9.80665, 9.80665, 9.80665],
+                "GyrX": [0.0, 0.0, 0.0, 0.0],
+                "GyrY": [0.0, 0.0, 0.0, 0.0],
+                "GyrZ": [0.0, 0.0, 0.0, 0.0],
+            }
+        )
+
+        enriched = _integrate_imu_velocity(df_imu)
+
+        self.assertIn("VelAccX", enriched.columns)
+        self.assertIn("VelAccY", enriched.columns)
+        self.assertIn("VelAccZ", enriched.columns)
+        self.assertIn("VelAccNorm", enriched.columns)
 
     def test_collect_metrics_returns_expected_keys(self) -> None:
         analyzer = AnalysisService()
@@ -82,6 +108,7 @@ class TestPipeline(unittest.TestCase):
 
         self.assertIn("Flight Duration (s)", metrics)
         self.assertIn("Distance Traveled (m)", metrics)
+        self.assertIn("Elevation Gain (m)", metrics)
         self.assertIn("Max Acc X (m/s^2)", metrics)
 
     def test_filter_gps_by_timeframe_filters_relative_window(self) -> None:

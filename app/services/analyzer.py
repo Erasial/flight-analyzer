@@ -144,3 +144,11 @@ class AnalysisService:
         # If we had quaternions, we'd use them here.
         
         return df
+    
+    @staticmethod
+    def get_elevation_gain(df: pd.DataFrame) -> float:
+        if 'Alt' in df.columns:
+            alt_diff = df['Alt'].diff()
+            gain = alt_diff[alt_diff > 0].sum()
+            return gain
+        return 0.0

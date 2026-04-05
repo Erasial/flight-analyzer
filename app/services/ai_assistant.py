@@ -5,16 +5,16 @@ from typing import Any
 import pandas as pd
 
 
-BASE_PROMPT_EN = (
-    "You are a UAV flight telemetry analysis assistant. "
-    "Respond only in English. "
-    "Analyze flight metrics and a compact telemetry summary. "
-    "Return a practical report in this format:\n"
-    "1) Short conclusion (2-4 sentences).\n"
-    "2) Key indicators (bullet list).\n"
-    "3) Potential risks or anomalies.\n"
-    "4) Recommendations for the next flight.\n"
-    "Do not invent facts that are not present in the input; if data is insufficient, state that explicitly."
+BASE_PROMPT_UA = (
+    "Ти асистент з аналізу телеметрії БПЛА. "
+    "Відповідай лише українською мовою. "
+    "Проаналізуй метрики польоту та компактне зведення телеметрії. "
+    "Поверни практичний звіт у форматі:\n"
+    "1) Короткий висновок (2-4 речення).\n"
+    "2) Ключові індикатори (маркований список).\n"
+    "3) Потенційні ризики або аномалії.\n"
+    "4) Рекомендації для наступного польоту.\n"
+    "Не вигадуй факти, яких немає у вхідних даних; якщо даних недостатньо — вкажи це явно."
 )
 
 
@@ -78,8 +78,8 @@ class GeminiFlightAssistant:
         }
 
         prompt_parts = [
-            BASE_PROMPT_EN,
-            "Input data (JSON):",
+            BASE_PROMPT_UA,
+            "Вхідні дані (JSON):",
             json.dumps(payload, ensure_ascii=False, indent=2),
         ]
 

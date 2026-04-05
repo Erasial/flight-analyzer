@@ -1,6 +1,16 @@
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
+from urllib import error, request
+import json
+
+
+_ELEVATION_CACHE: dict[tuple[int, int], float] = {}
+
+
+def _coord_cache_key(lat: float, lng: float) -> tuple[int, int]:
+	# 1e-5 deg ~= 1.1m at equator; good balance between reuse and terrain fidelity.
+	return (int(round(lat * 1e5)), int(round(lng * 1e5)))
 
 
 def _validate_plot_input(df_gps: pd.DataFrame) -> None:
@@ -13,6 +23,146 @@ def _validate_plot_input(df_gps: pd.DataFrame) -> None:
 		raise ValueError("df_gps must include 'Spd' and 'VZ' columns for dynamic velocity coloring")
 
 
+def _coerce_numeric_column(df: pd.DataFrame, column: str) -> pd.Series:
+	if column not in df.columns:
+		return pd.Series(dtype=float)
+	return pd.to_numeric(df[column], errors="coerce")
+
+
+def _sample_open_elevation(
+	lat: np.ndarray,
+	lng: np.ndarray,
+	timeout_s: float,
+) -> np.ndarray | None:
+	if len(lat) == 0 or len(lat) != len(lng):
+		return None
+
+	keys = [_coord_cache_key(float(la), float(lo)) for la, lo in zip(lat, lng)]
+	missing: list[tuple[int, int]] = []
+	seen: set[tuple[int, int]] = set()
+	for key in keys:
+		if key in _ELEVATION_CACHE or key in seen:
+			continue
+		seen.add(key)
+		missing.append(key)
+
+	batch_size = 500
+	for start in range(0, len(missing), batch_size):
+		end = min(start + batch_size, len(missing))
+		batch = missing[start:end]
+		locations = [{"latitude": key[0] / 1e5, "longitude": key[1] / 1e5} for key in batch]
+		payload = json.dumps({"locations": locations}).encode("utf-8")
+		req = request.Request(
+			url="https://api.open-elevation.com/api/v1/lookup",
+			data=payload,
+			headers={"Content-Type": "application/json"},
+			method="POST",
+		)
+
+		try:
+			with request.urlopen(req, timeout=max(0.5, float(timeout_s))) as response:
+				body = response.read().decode("utf-8")
+		except (error.URLError, TimeoutError, ValueError):
+			return None
+
+		try:
+			parsed = json.loads(body)
+			results = parsed.get("results", [])
+			batch_elevations = [float(item.get("elevation")) for item in results]
+			if len(batch_elevations) != len(batch):
+				return None
+			for key, elevation in zip(batch, batch_elevations):
+				_ELEVATION_CACHE[key] = elevation
+		except (TypeError, ValueError, KeyError, json.JSONDecodeError):
+			return None
+
+	values = [_ELEVATION_CACHE.get(key) for key in keys]
+	if any(v is None for v in values):
+		return None
+	return np.asarray(values, dtype=float)
+
+
+def _enu_square_grid(x: np.ndarray, y: np.ndarray, grid_size: int) -> tuple[np.ndarray, np.ndarray]:
+	x_min, x_max = float(np.nanmin(x)), float(np.nanmax(x))
+	y_min, y_max = float(np.nanmin(y)), float(np.nanmax(y))
+
+	span = max(x_max - x_min, y_max - y_min, 1.0)
+	margin = 0.1 * span
+	half = 0.5 * span + margin
+
+	cx = 0.5 * (x_min + x_max)
+	cy = 0.5 * (y_min + y_max)
+
+	n = max(15, int(grid_size))
+	x_axis = np.linspace(cx - half, cx + half, n)
+	y_axis = np.linspace(cy - half, cy + half, n)
+	return np.meshgrid(x_axis, y_axis)
+
+
+def _enu_square_ranges(x: np.ndarray, y: np.ndarray) -> tuple[list[float], list[float]]:
+	x_min, x_max = float(np.nanmin(x)), float(np.nanmax(x))
+	y_min, y_max = float(np.nanmin(y)), float(np.nanmax(y))
+
+	span = max(x_max - x_min, y_max - y_min, 1.0)
+	margin = 0.1 * span
+	half = 0.5 * span + margin
+
+	cx = 0.5 * (x_min + x_max)
+	cy = 0.5 * (y_min + y_max)
+	return [cx - half, cx + half], [cy - half, cy + half]
+
+
+def _enu_to_lat_lng_approx(
+	east: np.ndarray,
+	north: np.ndarray,
+	lat0_deg: float,
+	lng0_deg: float,
+) -> tuple[np.ndarray, np.ndarray]:
+	# Local ENU->geodetic approximation is accurate enough for small flight areas.
+	earth_radius_m = 6378137.0
+	lat0_rad = np.radians(lat0_deg)
+	lat = lat0_deg + np.degrees(north / earth_radius_m)
+	lng = lng0_deg + np.degrees(east / (earth_radius_m * np.cos(lat0_rad)))
+	return lat, lng
+
+
+def _prepare_ground_surface(
+	df_gps: pd.DataFrame,
+	x: np.ndarray,
+	y: np.ndarray,
+	ground_grid_size: int,
+	open_elevation_timeout_s: float,
+	terrain_altitude_origin: float | None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+	lat = _coerce_numeric_column(df_gps, "Lat")
+	lng = _coerce_numeric_column(df_gps, "Lng")
+	alt = _coerce_numeric_column(df_gps, "Alt")
+	valid_geo = lat.notna() & lng.notna() & alt.notna()
+	if valid_geo.sum() < 2:
+		raise ValueError("Open-Elevation terrain requires valid 'Lat', 'Lng', and 'Alt' in GPS data")
+
+	lat0 = float(lat.loc[valid_geo].iloc[0])
+	lng0 = float(lng.loc[valid_geo].iloc[0])
+	if terrain_altitude_origin is None:
+		alt0 = float(alt.loc[valid_geo].iloc[0])
+	else:
+		alt0 = float(terrain_altitude_origin)
+
+	gx, gy = _enu_square_grid(x, y, grid_size=ground_grid_size)
+	grid_lat, grid_lng = _enu_to_lat_lng_approx(gx, gy, lat0_deg=lat0, lng0_deg=lng0)
+
+	elevation_asl = _sample_open_elevation(
+		grid_lat.ravel(),
+		grid_lng.ravel(),
+		timeout_s=open_elevation_timeout_s,
+	)
+	if elevation_asl is None:
+		raise ValueError("Failed to fetch terrain from Open-Elevation API")
+
+	gz = elevation_asl.reshape(gx.shape) - alt0
+	return gx, gy, gz
+
+
 def _build_trajectory(df_gps: pd.DataFrame) -> pd.DataFrame:
 	e = pd.to_numeric(df_gps["East"], errors="coerce")
 	n = pd.to_numeric(df_gps["North"], errors="coerce")
@@ -22,6 +172,9 @@ def _build_trajectory(df_gps: pd.DataFrame) -> pd.DataFrame:
 	climb = -vz  # ArduPilot convention: negative VZ means climbing.
 
 	trajectory = pd.DataFrame({"East": e, "North": n, "Up": u, "Spd": spd, "VZ": vz, "ClimbRate": climb})
+	for optional_col in ["Lat", "Lng", "Alt"]:
+		if optional_col in df_gps.columns:
+			trajectory[optional_col] = pd.to_numeric(df_gps[optional_col], errors="coerce")
 	if "TimeUS" in df_gps.columns:
 		trajectory["TimeUS"] = pd.to_numeric(df_gps["TimeUS"], errors="coerce")
 
@@ -34,9 +187,9 @@ def _build_trajectory(df_gps: pd.DataFrame) -> pd.DataFrame:
 
 def _resolve_speed_unit(speed_unit: str) -> tuple[float, str]:
 	unit = speed_unit.strip().lower()
-	if unit == "km/h":
-		return 3.6, "km/h"
-	return 1.0, "m/s"
+	if unit in {"km/h", "км/год"}:
+		return 3.6, "км/год"
+	return 1.0, "м/с"
 
 
 def _resolve_color_metric(
@@ -110,8 +263,35 @@ def _build_figure(
 	plot_title_suffix: str,
 	speed_unit_label: str,
 	color_metric_unit_label: str,
+	show_ground: bool,
+	ground_surface: tuple[np.ndarray, np.ndarray, np.ndarray] | None,
+	x_axis_range: list[float],
+	y_axis_range: list[float],
 ):
 	fig = go.Figure()
+
+	x_span = float(x_axis_range[1] - x_axis_range[0])
+	y_span = float(y_axis_range[1] - y_axis_range[0])
+	xy_span = max(x_span, y_span, 1.0)
+	z_span = max(1e-6, float(np.nanmax(z) - np.nanmin(z)))
+	# Keep XY square for map fidelity, but boost Z readability to avoid flattened perception.
+	z_aspect = float(np.clip((z_span / xy_span) * 2.4, 0.95, 1.8))
+
+	if show_ground and ground_surface is not None:
+		gx, gy, gz = ground_surface
+		fig.add_trace(
+			go.Surface(
+				x=gx,
+				y=gy,
+				z=gz,
+				name="Ground Surface",
+				opacity=0.55,
+				showscale=False,
+				colorscale=[[0.0, "#6E8B3D"], [0.5, "#A78A5A"], [1.0, "#D8C4A3"]],
+				hovertemplate="Ground<br>E: %{x:.2f} m<br>N: %{y:.2f} m<br>U: %{z:.2f} m<extra></extra>",
+			)
+		)
+
 	fig.add_trace(
 		go.Scatter3d(
 			x=x,
@@ -178,9 +358,11 @@ def _build_figure(
 		title=f"Flight Trajectory (ENU) - Colored by {plot_title_suffix}",
 		legend={"x": 0.01, "y": 0.99, "yanchor": "top", "bgcolor": "rgba(255,255,255,0.7)"},
 		scene={
-			"xaxis_title": "East (m)",
-			"yaxis_title": "North (m)",
-			"zaxis_title": "Up (m)",
+			"xaxis": {"title": "East (m)", "range": x_axis_range, "autorange": False},
+			"yaxis": {"title": "North (m)", "range": y_axis_range, "autorange": False},
+			"zaxis": {"title": "Up (m)"},
+			"aspectmode": "manual",
+			"aspectratio": {"x": 1.0, "y": 1.0, "z": z_aspect},
 		},
 		margin={"l": 0, "r": 24, "b": 0, "t": 40},
 	)
@@ -194,10 +376,15 @@ def plot_flight_path_3d(
 	auto_open: bool = False,
 	color_by: str = "combined",
 	speed_unit: str = "m/s",
+	show_ground: bool = True,
+	ground_grid_size: int = 20,
+	open_elevation_timeout_s: float = 4.0,
+	terrain_altitude_origin: float | None = None,
 ):
-	"""Build an interactive Plotly 3D trajectory with velocity-based dynamic coloring."""
+	"""Build an interactive Plotly 3D trajectory with optional Open-Elevation terrain."""
 	_validate_plot_input(df_gps)
 	trajectory = _build_trajectory(df_gps)
+
 	(
 		velocity_color,
 		color_title,
@@ -213,6 +400,18 @@ def plot_flight_path_3d(
 	z = np.ravel(trajectory["Up"].to_numpy(dtype=float))
 	ground_speed = np.ravel(ground_speed)
 	climb_rate = np.ravel(climb_rate)
+	x_axis_range, y_axis_range = _enu_square_ranges(x, y)
+
+	ground_surface = None
+	if show_ground:
+		ground_surface = _prepare_ground_surface(
+			df_gps=trajectory,
+			x=x,
+			y=y,
+			ground_grid_size=ground_grid_size,
+			open_elevation_timeout_s=open_elevation_timeout_s,
+			terrain_altitude_origin=terrain_altitude_origin,
+		)
 
 	fig = _build_figure(
 		x,
@@ -225,6 +424,10 @@ def plot_flight_path_3d(
 		plot_title_suffix,
 		speed_unit_label,
 		color_metric_unit_label,
+		show_ground=show_ground,
+		ground_surface=ground_surface,
+		x_axis_range=x_axis_range,
+		y_axis_range=y_axis_range,
 	)
 
 	if output_html:

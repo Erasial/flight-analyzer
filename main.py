@@ -16,6 +16,7 @@ def parse_args() -> argparse.Namespace:
         default="flight_trajectory_enu.html",
         help="Output HTML path for 3D trajectory",
     )
+    cli.add_argument("--no-ground", action="store_true", help="Disable ground surface on the 3D plot")
     cli.add_argument("--no-plot", action="store_true", help="Skip trajectory HTML generation")
     cli.add_argument(
         "--log-level",
@@ -46,7 +47,12 @@ def run() -> int:
             print(f"{key}: {value:.2f}")
 
         if not args.no_plot:
-            plot_flight_path_3d(telemetry.df_gps, output_html=args.output_html, auto_open=False)
+            plot_flight_path_3d(
+                telemetry.df_gps,
+                output_html=args.output_html,
+                auto_open=False,
+                show_ground=not args.no_ground,
+            )
             logger.info("Saved trajectory HTML to %s", args.output_html)
     except (FileNotFoundError, OSError, ValueError, KeyError) as exc:
         logger.error("Analysis failed: %s", exc)
