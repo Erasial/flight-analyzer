@@ -1,26 +1,26 @@
-from dataclasses import dataclass
 import logging
 import os
+from dataclasses import dataclass
 
 import pandas as pd
-import streamlit as st
 import plotly.graph_objects as go
+import streamlit as st
 
+from app.parsers.base import ParseResult, ParseStatus
 from app.parsers.binary import BinaryDataParser
 from app.services.ai_assistant import GeminiFlightAssistant
 from app.services.analyzer import AnalysisService
-from app.services.reporting import export_full_report_pdf_bytes, export_metrics_csv_bytes
 from app.services.pipeline import (
+    ProcessedTelemetry,
     collect_metrics,
     filter_gps_by_timeframe,
     list_local_bin_files,
-    parse_data_from_path,
-    parse_uploaded_bin,
-    ProcessedTelemetry,
+    parse_result_from_path,
+    parse_uploaded_bin_result,
     prepare_telemetry_frames,
 )
+from app.services.reporting import export_full_report_pdf_bytes, export_metrics_csv_bytes
 from visualization.flight_plotter import plot_flight_path_3d
-
 
 st.set_page_config(page_title="Аналізатор польотних даних", layout="wide")
 
@@ -30,6 +30,7 @@ LOGGER = logging.getLogger(__name__)
 @dataclass(frozen=True)
 class SidebarState:
     data: dict[str, pd.DataFrame] | None
+    parse_result: ParseResult | None
     source_label: str
     imu_index: int
     color_by: str
@@ -311,6 +312,7 @@ def _load_data_from_sidebar(parser: BinaryDataParser) -> SidebarState:
     source_mode = st.radio("Джерело даних", ["Локальний файл", "Завантажити BIN"], index=0)
 
     data = st.session_state.get("loaded_data")
+    parse_result = st.session_state.get("loaded_parse_result")
     source_label = st.session_state.get("loaded_source_label", "")
 
     if source_mode == "Локальний файл":
@@ -321,9 +323,13 @@ def _load_data_from_sidebar(parser: BinaryDataParser) -> SidebarState:
             selected = st.selectbox("Оберіть BIN-файл", data_files, format_func=lambda p: str(p))
             if st.button("Завантажити дані", width="stretch"):
                 try:
-                    data = parse_data_from_path(parser, str(selected))
+                    parse_result = parse_result_from_path(parser, str(selected))
+                    if parse_result.status is ParseStatus.REJECTED:
+                        raise ValueError(parse_result.error or "BIN file could not be decoded")
+                    data = parse_result.dataframes
                     source_label = str(selected)
                     st.session_state["loaded_data"] = data
+                    st.session_state["loaded_parse_result"] = parse_result
                     st.session_state["loaded_source_label"] = source_label
                     st.session_state.pop("ai_analysis", None)
                 except (FileNotFoundError, OSError, ValueError) as exc:
@@ -334,9 +340,13 @@ def _load_data_from_sidebar(parser: BinaryDataParser) -> SidebarState:
         if uploaded is not None:
             if st.button("Завантажити дані", width="stretch"):
                 try:
-                    data = parse_uploaded_bin(parser, uploaded)
+                    parse_result = parse_uploaded_bin_result(parser, uploaded)
+                    if parse_result.status is ParseStatus.REJECTED:
+                        raise ValueError(parse_result.error or "BIN file could not be decoded")
+                    data = parse_result.dataframes
                     source_label = uploaded.name
                     st.session_state["loaded_data"] = data
+                    st.session_state["loaded_parse_result"] = parse_result
                     st.session_state["loaded_source_label"] = source_label
                     st.session_state.pop("ai_analysis", None)
                 except (OSError, ValueError) as exc:
@@ -348,9 +358,11 @@ def _load_data_from_sidebar(parser: BinaryDataParser) -> SidebarState:
 
     if st.button("Очистити завантажені дані", width="stretch"):
         st.session_state.pop("loaded_data", None)
+        st.session_state.pop("loaded_parse_result", None)
         st.session_state.pop("loaded_source_label", None)
         st.session_state.pop("ai_analysis", None)
         data = None
+        parse_result = None
         source_label = ""
 
     st.header("Фільтри")
@@ -361,6 +373,7 @@ def _load_data_from_sidebar(parser: BinaryDataParser) -> SidebarState:
 
     return SidebarState(
         data=data,
+        parse_result=parse_result,
         source_label=source_label,
         imu_index=int(imu_index),
         color_by=color_by,
@@ -386,6 +399,15 @@ def main() -> None:
 
     if state.source_label:
         st.success(f"Завантажено: {state.source_label}")
+
+    if state.parse_result is not None:
+        integrity_label = state.parse_result.status.value.upper()
+        if state.parse_result.status is ParseStatus.COMPLETE:
+            st.success(f"Цілісність даних: {integrity_label}")
+        else:
+            st.warning(f"Цілісність даних: {integrity_label}")
+            for warning in state.parse_result.warnings:
+                st.warning(warning)
 
     try:
         telemetry: ProcessedTelemetry = prepare_telemetry_frames(analyzer, state.data, imu_index=state.imu_index)

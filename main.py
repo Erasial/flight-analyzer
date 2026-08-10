@@ -1,9 +1,10 @@
 import argparse
 import logging
 
+from app.parsers.base import ParseStatus
 from app.parsers.binary import BinaryDataParser
 from app.services.analyzer import AnalysisService
-from app.services.pipeline import collect_metrics, parse_data_from_path, prepare_telemetry_frames
+from app.services.pipeline import collect_metrics, prepare_telemetry_frames
 from visualization.flight_plotter import plot_flight_path_3d
 
 
@@ -18,6 +19,15 @@ def parse_args() -> argparse.Namespace:
     )
     cli.add_argument("--no-ground", action="store_true", help="Disable ground surface on the 3D plot")
     cli.add_argument("--no-plot", action="store_true", help="Skip trajectory HTML generation")
+    cli.add_argument(
+        "--expected-size",
+        type=int,
+        help="Trusted original file size in bytes for truncation detection",
+    )
+    cli.add_argument(
+        "--expected-sha256",
+        help="Trusted original SHA-256 for provenance verification",
+    )
     cli.add_argument(
         "--log-level",
         default="INFO",
@@ -36,10 +46,37 @@ def run() -> int:
     analyzer = AnalysisService()
 
     try:
-        dataframes = parse_data_from_path(parser, args.file_path)
-        telemetry = prepare_telemetry_frames(analyzer, dataframes, imu_index=args.imu_index)
+        parse_result = parser.parse_with_diagnostics(
+            args.file_path,
+            expected_size_bytes=args.expected_size,
+            expected_sha256=args.expected_sha256,
+        )
+        logger.info(
+            "Data integrity: %s; decoded messages: %d",
+            parse_result.status.value.upper(),
+            parse_result.decoded_message_count,
+        )
+        for warning in parse_result.warnings:
+            logger.warning("%s", warning)
+        for diagnostic in parse_result.diagnostics.captured_lines[:5]:
+            logger.debug("Decoder: %s", diagnostic)
+
+        if parse_result.status is ParseStatus.REJECTED:
+            logger.error("Analysis rejected: %s", parse_result.error or "invalid BIN file")
+            return 3
+
+        telemetry = prepare_telemetry_frames(
+            analyzer,
+            parse_result.dataframes,
+            imu_index=args.imu_index,
+        )
 
         if telemetry.df_gps.empty:
+            if parse_result.status is ParseStatus.PARTIAL:
+                logger.error(
+                    "Analysis rejected: the damaged log contains no usable GPS data"
+                )
+                return 3
             raise ValueError("GPS data is missing or empty in this log file")
 
         metrics = collect_metrics(analyzer, telemetry.df_gps, telemetry.df_imu)
@@ -58,7 +95,7 @@ def run() -> int:
         logger.error("Analysis failed: %s", exc)
         return 1
 
-    return 0
+    return 2 if parse_result.status is ParseStatus.PARTIAL else 0
 
 
 if __name__ == "__main__":
