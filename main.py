@@ -51,6 +51,12 @@ def parse_args() -> argparse.Namespace:
         default=50,
         help="Maximum incident narratives to print (default: 50)",
     )
+    cli.add_argument(
+        "--segment-limit",
+        type=int,
+        default=50,
+        help="Maximum flight/phase segment summaries to print (default: 50)",
+    )
     return cli.parse_args()
 
 
@@ -156,6 +162,25 @@ def run() -> int:
                 print(
                     f"... {len(incident_report.incidents) - args.incident_limit} "
                     "more incident(s); increase --incident-limit to display them."
+                )
+
+        segment_report = telemetry.segment_report
+        logger.info("Segment analysis: %d segment(s)", len(segment_report.segments))
+        if segment_report.segments and args.segment_limit > 0:
+            print("\nSegment analysis:")
+            for segment in segment_report.segments[: args.segment_limit]:
+                distance = segment.metrics.get("Distance Traveled (m)")
+                max_altitude = segment.metrics.get("Max Altitude (m)")
+                details = [f"duration={segment.duration_s:.2f}s"]
+                if distance is not None:
+                    details.append(f"distance={distance:.2f}m")
+                if max_altitude is not None:
+                    details.append(f"max_alt={max_altitude:.2f}m")
+                if segment.incident_indices:
+                    details.append("incidents=" + ",".join(map(str, segment.incident_indices)))
+                print(
+                    f"#{segment.index} {segment.segment_type}:{segment.label} "
+                    f"[{'COMPLETE' if segment.complete else 'PARTIAL'}] " + " ".join(details)
                 )
 
         metrics = collect_metrics(analyzer, telemetry.df_gps, telemetry.df_imu)

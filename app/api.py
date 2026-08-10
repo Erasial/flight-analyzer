@@ -141,6 +141,7 @@ async def analyze_flight_log(file: Annotated[UploadFile, File(...)]):
             "data_quality": telemetry.quality_report.to_dict(),
             "flight_events": telemetry.event_report.to_dict(),
             "incidents": telemetry.incident_report.to_dict(),
+            "segments": telemetry.segment_report.to_dict(),
             "metrics": metrics,
             "metric_quality": {
                 name: assessment.to_dict() for name, assessment in metric_quality.items()

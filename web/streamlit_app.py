@@ -23,6 +23,7 @@ from app.services.pipeline import (
     prepare_telemetry_frames,
 )
 from app.services.reporting import export_full_report_pdf_bytes, export_metrics_csv_bytes
+from app.services.segment_analysis import SegmentAnalysisReport
 from visualization.flight_plotter import plot_flight_path_3d
 
 st.set_page_config(page_title="Аналізатор польотних даних", layout="wide")
@@ -105,6 +106,7 @@ def _render_summary_tab(
 def _render_events_tab(
     event_report: FlightEventReport,
     incident_report: IncidentReport,
+    segment_report: SegmentAnalysisReport,
 ) -> None:
     summary = event_report.to_dict()["summary"]
     st.caption(
@@ -124,6 +126,25 @@ def _render_events_tab(
             width="stretch",
             hide_index=True,
         )
+
+    if segment_report.segments:
+        st.subheader("Метрики окремих польотів і фаз")
+        segment_rows = [
+            {
+                "№": segment.index,
+                "Тип": segment.segment_type,
+                "Назва": segment.label,
+                "Тривалість, с": round(segment.duration_s, 3),
+                "Завершений": segment.complete,
+                "GPS": segment.gps_records,
+                "IMU": segment.imu_records,
+                "Дистанція, м": segment.metrics.get("Distance Traveled (m)"),
+                "Макс. висота, м": segment.metrics.get("Max Altitude (m)"),
+                "Інциденти": ", ".join(map(str, segment.incident_indices)),
+            }
+            for segment in segment_report.segments
+        ]
+        st.dataframe(pd.DataFrame(segment_rows), width="stretch", hide_index=True)
 
     if not event_report.events:
         st.info("У журналі не знайдено підтримуваних польотних подій.")
@@ -596,7 +617,11 @@ def main() -> None:
         _render_ai_tab(metrics, df_gps, df_imu, gemini_api_key)
 
     with tabs[5]:
-        _render_events_tab(telemetry.event_report, telemetry.incident_report)
+        _render_events_tab(
+            telemetry.event_report,
+            telemetry.incident_report,
+            telemetry.segment_report,
+        )
 
 
 if __name__ == "__main__":
