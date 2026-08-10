@@ -56,6 +56,15 @@ class TestAnalysisService(unittest.TestCase):
         self.assertAlmostEqual(sample_rate, 1.0, places=6)
         self.assertAlmostEqual(duration, 2.0, places=6)
 
+    def test_sample_rate_ignores_isolated_timestamp_outlier(self) -> None:
+        timestamps = pd.DataFrame(
+            {"TimeUS": [0, 100_000, 200_000, 10_000_000_000, 400_000, 500_000]}
+        )
+
+        sample_rate = self.analyzer.get_sample_rate(timestamps)
+
+        self.assertAlmostEqual(sample_rate, 10.0)
+
     def test_max_acceleration(self) -> None:
         max_acc = self.analyzer.get_max_acceleration(self.df_imu)
         self.assertEqual(max_acc["AccX"], 3.0)

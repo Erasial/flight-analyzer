@@ -1,7 +1,8 @@
+
 import pandas as pd
-import math
 
 from app.core.utils import vectorized_haversine
+
 
 class AnalysisService:
     @staticmethod
@@ -81,9 +82,15 @@ class AnalysisService:
     @staticmethod
     def get_sample_rate(df: pd.DataFrame) -> float:
         if 'TimeUS' in df.columns and len(df) > 1:
-            time_diffs = df['TimeUS'].diff().dropna()
-            avg_time_diff_sec = time_diffs.mean() / 1e6
-            return 1.0 / avg_time_diff_sec if avg_time_diff_sec > 0 else 0.0
+            timestamps = pd.to_numeric(df['TimeUS'], errors='coerce')
+            positive_diffs = timestamps.diff()
+            positive_diffs = positive_diffs[positive_diffs > 0].dropna()
+            if positive_diffs.empty:
+                return 0.0
+
+            # A median interval is resilient to isolated corrupt timestamps and gaps.
+            median_time_diff_sec = float(positive_diffs.median()) / 1e6
+            return 1.0 / median_time_diff_sec if median_time_diff_sec > 0 else 0.0
         return 0.0
 
     @staticmethod
