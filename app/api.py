@@ -10,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.parsers.base import ParseStatus
 from app.parsers.binary import BinaryDataParser
 from app.services.analyzer import AnalysisService
+from app.services.data_quality import assess_metric_quality
 from app.services.pipeline import collect_metrics, prepare_telemetry_frames
 
 app = FastAPI(title="Flight Data Analyzer API")
@@ -72,6 +73,7 @@ async def analyze_flight_log(file: Annotated[UploadFile, File(...)]):
         
         # Collect various flight metrics
         metrics = collect_metrics(analyzer, telemetry.df_gps, telemetry.df_imu)
+        metric_quality = assess_metric_quality(metrics, telemetry.quality_report)
 
         # Merge ATT and GPS data for synchronized telemetry
         if not telemetry.df_att.empty and not telemetry.df_gps.empty:
@@ -129,7 +131,13 @@ async def analyze_flight_log(file: Annotated[UploadFile, File(...)]):
                 "artifact_size_bytes": parse_result.artifact_size_bytes,
                 "artifact_sha256": parse_result.artifact_sha256,
             },
+            "data_quality": telemetry.quality_report.to_dict(),
+            "flight_events": telemetry.event_report.to_dict(),
             "metrics": metrics,
+            "metric_quality": {
+                name: assessment.to_dict()
+                for name, assessment in metric_quality.items()
+            },
             "table_preview": table_data,
             "chart_points": chart_points
         }

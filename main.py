@@ -4,6 +4,7 @@ import logging
 from app.parsers.base import ParseStatus
 from app.parsers.binary import BinaryDataParser
 from app.services.analyzer import AnalysisService
+from app.services.data_quality import QualityStatus, assess_metric_quality
 from app.services.pipeline import collect_metrics, prepare_telemetry_frames
 from visualization.flight_plotter import plot_flight_path_3d
 
@@ -33,6 +34,12 @@ def parse_args() -> argparse.Namespace:
         default="INFO",
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
         help="Console logging verbosity",
+    )
+    cli.add_argument(
+        "--event-limit",
+        type=int,
+        default=50,
+        help="Maximum detected non-mode events to print (default: 50)",
     )
     return cli.parse_args()
 
@@ -79,9 +86,51 @@ def run() -> int:
                 return 3
             raise ValueError("GPS data is missing or empty in this log file")
 
+        logger.info("Telemetry quality: %s", telemetry.quality_report.status.value.upper())
+        for stream_name, stream_report in telemetry.quality_report.streams.items():
+            logger.info(
+                "%s quality: %s; valid=%d/%d; rejected=%d",
+                stream_name,
+                stream_report.status.value.upper(),
+                stream_report.valid_records,
+                stream_report.total_records,
+                stream_report.rejected_records,
+            )
+            for warning in stream_report.warnings:
+                logger.warning("%s", warning)
+
+        event_report = telemetry.event_report
+        logger.info(
+            "Detected flight events: %d; segments: %d; critical: %d; warnings: %d",
+            len(event_report.events),
+            len(event_report.segments),
+            event_report.critical_count,
+            event_report.warning_count,
+        )
+        visible_events = [
+            event
+            for event in event_report.events
+            if event.kind.value != "mode_change"
+            or event.severity.value != "info"
+        ]
+        if args.event_limit > 0:
+            print("\nDetected events:")
+            for event in visible_events[: args.event_limit]:
+                print(
+                    f"{event.time_us}: {event.kind.value} "
+                    f"[{event.severity.value.upper()}] {event.title}"
+                )
+            if len(visible_events) > args.event_limit:
+                print(
+                    f"... {len(visible_events) - args.event_limit} more event(s); "
+                    "increase --event-limit to display them."
+                )
+
         metrics = collect_metrics(analyzer, telemetry.df_gps, telemetry.df_imu)
+        metric_quality = assess_metric_quality(metrics, telemetry.quality_report)
         for key, value in metrics.items():
-            print(f"{key}: {value:.2f}")
+            confidence = metric_quality[key].confidence.value.upper()
+            print(f"{key}: {value:.2f} [{confidence}]")
 
         if not args.no_plot:
             plot_flight_path_3d(
@@ -95,7 +144,12 @@ def run() -> int:
         logger.error("Analysis failed: %s", exc)
         return 1
 
-    return 2 if parse_result.status is ParseStatus.PARTIAL else 0
+    if (
+        parse_result.status is ParseStatus.PARTIAL
+        or telemetry.quality_report.status is not QualityStatus.GOOD
+    ):
+        return 2
+    return 0
 
 
 if __name__ == "__main__":

@@ -10,6 +10,8 @@ from app.parsers.base import ParseResult, ParseStatus
 from app.parsers.binary import BinaryDataParser
 from app.services.ai_assistant import GeminiFlightAssistant
 from app.services.analyzer import AnalysisService
+from app.services.data_quality import MetricQualityAssessment, assess_metric_quality
+from app.services.event_detector import FlightEventReport
 from app.services.pipeline import (
     ProcessedTelemetry,
     collect_metrics,
@@ -79,11 +81,64 @@ def _format_metrics_for_display(metrics: dict[str, float], speed_unit: str) -> d
     return display_metrics
 
 
-def _render_summary_tab(metrics: dict[str, float], speed_unit: str) -> None:
+def _render_summary_tab(
+    metrics: dict[str, float],
+    speed_unit: str,
+    metric_quality: dict[str, MetricQualityAssessment],
+) -> None:
     display_metrics = _format_metrics_for_display(metrics, speed_unit)
     cols = st.columns(5)
-    for idx, (key, value) in enumerate(display_metrics.items()):
-        cols[idx % 5].metric(key, _format_metric(value))
+    for idx, ((key, value), source_key) in enumerate(
+        zip(display_metrics.items(), metrics, strict=True)
+    ):
+        assessment = metric_quality[source_key]
+        confidence = assessment.confidence.value.upper()
+        cols[idx % 5].metric(
+            f"{key} [{confidence}]",
+            _format_metric(value),
+            help="; ".join(assessment.reasons) or (
+                f"Довіра визначена за якістю потоку {assessment.source_stream}."
+            ),
+        )
+
+
+def _render_events_tab(event_report: FlightEventReport) -> None:
+    summary = event_report.to_dict()["summary"]
+    cols = st.columns(4)
+    cols[0].metric("Події", summary["event_count"])
+    cols[1].metric("Польотні сегменти", summary["flight_segment_count"])
+    cols[2].metric("Критичні", summary["critical_count"])
+    cols[3].metric("Попередження", summary["warning_count"])
+
+    if event_report.segments:
+        st.subheader("Сегменти ARM–DISARM")
+        st.dataframe(
+            pd.DataFrame(segment.to_dict() for segment in event_report.segments),
+            width="stretch",
+            hide_index=True,
+        )
+
+    if not event_report.events:
+        st.info("У журналі не знайдено підтримуваних польотних подій.")
+        return
+
+    st.subheader("Часова шкала")
+    event_rows = [
+        {
+            "TimeUS": event.time_us,
+            "Відносний час, с": round(event.relative_time_s, 3),
+            "Тип": event.kind.value,
+            "Категорія": event.category.value,
+            "Рівень": event.severity.value.upper(),
+            "Подія": event.title,
+            "Джерело": event.source,
+            "Деталі": event.details,
+        }
+        for event in event_report.events
+    ]
+    st.dataframe(pd.DataFrame(event_rows), width="stretch", hide_index=True)
+    for warning in event_report.warnings:
+        st.warning(warning)
 
 
 def _render_export_section(
@@ -424,6 +479,33 @@ def main() -> None:
         st.error("GPS-дані відсутні або порожні у цьому логу.")
         return
 
+    quality_report = telemetry.quality_report
+    if quality_report.status.value == "good":
+        st.success("Якість телеметрії: GOOD")
+    else:
+        st.warning(f"Якість телеметрії: {quality_report.status.value.upper()}")
+
+    quality_rows = []
+    for stream_name, stream_report in quality_report.streams.items():
+        quality_rows.append(
+            {
+                "Потік": stream_name,
+                "Статус": stream_report.status.value.upper(),
+                "Усього": stream_report.total_records,
+                "Валідні": stream_report.valid_records,
+                "Відхилені": stream_report.rejected_records,
+                "Timestamp outliers": stream_report.timestamp_outliers,
+                "Дублікати": stream_report.duplicate_timestamps,
+                "Розриви": stream_report.gap_count,
+                "Value outliers": stream_report.value_outliers,
+            }
+        )
+    with st.expander("Якість і очищення телеметрії", expanded=False):
+        st.dataframe(pd.DataFrame(quality_rows), width="stretch", hide_index=True)
+        for stream_report in quality_report.streams.values():
+            for warning in stream_report.warnings:
+                st.warning(warning)
+
     with st.sidebar:
         st.subheader("Часовий інтервал")
         timeframe_window = _render_timeframe_filter(df_gps)
@@ -436,11 +518,21 @@ def main() -> None:
         ).strip()
 
     metrics = collect_metrics(analyzer, df_gps, df_imu)
+    metric_quality = assess_metric_quality(metrics, quality_report)
 
-    tabs = st.tabs(["Підсумок", "3D-траєкторія", "Дрейф швидкості", "Таблиці даних", "AI-аналіз"])
+    tabs = st.tabs(
+        [
+            "Підсумок",
+            "3D-траєкторія",
+            "Дрейф швидкості",
+            "Таблиці даних",
+            "AI-аналіз",
+            "Події",
+        ]
+    )
 
     with tabs[0]:
-        _render_summary_tab(metrics, state.speed_unit)
+        _render_summary_tab(metrics, state.speed_unit, metric_quality)
         _render_export_section(
             metrics,
             df_gps,
@@ -467,6 +559,9 @@ def main() -> None:
 
     with tabs[4]:
         _render_ai_tab(metrics, df_gps, df_imu, gemini_api_key)
+
+    with tabs[5]:
+        _render_events_tab(telemetry.event_report)
 
 
 if __name__ == "__main__":
