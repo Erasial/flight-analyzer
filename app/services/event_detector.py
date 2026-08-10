@@ -22,6 +22,12 @@ class EventCategory(StrEnum):
     SYSTEM = "system"
 
 
+class VehicleProfile(StrEnum):
+    COPTER = "copter"
+    ROCKET = "rocket"
+    UNKNOWN = "unknown"
+
+
 class EventKind(StrEnum):
     ARM = "arm"
     DISARM = "disarm"
@@ -49,6 +55,8 @@ class EventKind(StrEnum):
     GPS_FIX_LOST = "gps_fix_lost"
     AUTOPILOT_ERROR = "autopilot_error"
     AUTOPILOT_ERROR_CLEARED = "autopilot_error_cleared"
+    ROCKET_STAGE = "rocket_stage"
+    PARACHUTE_RELEASE = "parachute_release"
 
 
 COPTER_MODE_NAMES = {
@@ -193,6 +201,8 @@ class FlightEventReport:
     events: tuple[FlightEvent, ...] = ()
     segments: tuple[FlightSegment, ...] = ()
     warnings: tuple[str, ...] = ()
+    vehicle_profile: VehicleProfile = VehicleProfile.UNKNOWN
+    firmware: str | None = None
 
     @property
     def critical_count(self) -> int:
@@ -205,6 +215,8 @@ class FlightEventReport:
     def to_dict(self) -> dict[str, Any]:
         return {
             "summary": {
+                "vehicle_profile": self.vehicle_profile.value,
+                "firmware": self.firmware,
                 "event_count": len(self.events),
                 "flight_segment_count": len(self.segments),
                 "complete_segment_count": sum(segment.complete for segment in self.segments),
@@ -239,11 +251,52 @@ def _numeric_time(value: Any) -> int | None:
     return int(numeric)
 
 
+def detect_vehicle_profile(messages: pd.DataFrame) -> tuple[VehicleProfile, str | None]:
+    if messages.empty or "Message" not in messages.columns:
+        return VehicleProfile.UNKNOWN, None
+    for raw_message in messages["Message"].astype(str):
+        message = raw_message.strip()
+        normalized = message.casefold()
+        if normalized.startswith("therocket "):
+            return VehicleProfile.ROCKET, message
+        if normalized.startswith("arducopter "):
+            return VehicleProfile.COPTER, message
+    return VehicleProfile.UNKNOWN, None
+
+
 def _message_event(time_us: int, message: str) -> _PendingEvent | None:
     normalized = message.casefold().strip()
     if normalized.startswith(("prearm:", "gcs:", "src=")):
         return None
     evidence = {"message": message}
+
+    stage_match = re.search(r"fstg:\s*([a-z_]+)\s*->\s*([a-z_]+)", normalized)
+    if stage_match:
+        source_stage = stage_match.group(1).upper()
+        target_stage = stage_match.group(2).upper()
+        return _PendingEvent(
+            time_us,
+            EventKind.ROCKET_STAGE,
+            EventCategory.FLIGHT,
+            EventSeverity.INFO,
+            f"Rocket stage changed to {target_stage}",
+            "MSG",
+            evidence={
+                **evidence,
+                "from_stage": source_stage,
+                "to_stage": target_stage,
+            },
+        )
+    if normalized == "parachute: released":
+        return _PendingEvent(
+            time_us,
+            EventKind.PARACHUTE_RELEASE,
+            EventCategory.FLIGHT,
+            EventSeverity.INFO,
+            "Parachute released",
+            "MSG",
+            evidence=evidence,
+        )
 
     if "disarming motors" in normalized:
         return _PendingEvent(
@@ -437,6 +490,7 @@ def detect_flight_events(dataframes: dict[str, pd.DataFrame]) -> FlightEventRepo
     warnings: list[str] = []
 
     messages = dataframes.get("MSG", pd.DataFrame())
+    vehicle_profile, firmware = detect_vehicle_profile(messages)
     if not messages.empty and {"TimeUS", "Message"}.issubset(messages.columns):
         for record in messages.to_dict(orient="records"):
             time_us = _numeric_time(record.get("TimeUS"))
@@ -454,8 +508,15 @@ def detect_flight_events(dataframes: dict[str, pd.DataFrame]) -> FlightEventRepo
             reason = _numeric_time(record.get("Rsn"))
             if time_us is None or mode_value is None:
                 continue
-            mode_name = COPTER_MODE_NAMES.get(mode_value, f"MODE_{mode_value}")
-            reason_name = MODE_REASON_NAMES.get(reason or -1, f"reason_{reason}")
+            if vehicle_profile is VehicleProfile.ROCKET:
+                mode_name = f"CUSTOM_MODE_{mode_value}"
+                reason_name = f"custom_reason_{reason}"
+            elif vehicle_profile is VehicleProfile.COPTER:
+                mode_name = COPTER_MODE_NAMES.get(mode_value, f"MODE_{mode_value}")
+                reason_name = MODE_REASON_NAMES.get(reason or -1, f"reason_{reason}")
+            else:
+                mode_name = f"MODE_{mode_value}"
+                reason_name = MODE_REASON_NAMES.get(reason or -1, f"reason_{reason}")
             pending.append(
                 _PendingEvent(
                     time_us,
@@ -481,6 +542,8 @@ def detect_flight_events(dataframes: dict[str, pd.DataFrame]) -> FlightEventRepo
             11: (EventKind.DISARM, "Motors disarmed"),
             15: (EventKind.TAKEOFF, "Takeoff detected"),
         }
+        if vehicle_profile is VehicleProfile.ROCKET:
+            event_map[51] = (EventKind.PARACHUTE_RELEASE, "Parachute released")
         for record in ev_records.to_dict(orient="records"):
             time_us = _numeric_time(record.get("TimeUS"))
             event_id = _numeric_time(record.get("Id", record.get("ID")))
@@ -603,4 +666,10 @@ def detect_flight_events(dataframes: dict[str, pd.DataFrame]) -> FlightEventRepo
         )
         for event in deduplicated
     )
-    return FlightEventReport(events=events, segments=segments, warnings=tuple(warnings))
+    return FlightEventReport(
+        events=events,
+        segments=segments,
+        warnings=tuple(warnings),
+        vehicle_profile=vehicle_profile,
+        firmware=firmware,
+    )

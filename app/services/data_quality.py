@@ -252,7 +252,11 @@ def _timestamp_diagnostics(
     )
 
 
-def validate_gps(df: pd.DataFrame) -> ValidatedStream:
+def validate_gps(
+    df: pd.DataFrame,
+    *,
+    vertical_speed_limit_m_s: float = 100.0,
+) -> ValidatedStream:
     if df is None or df.empty:
         return _empty_result("GPS", 0 if df is None else len(df))
     if "TimeUS" not in df.columns:
@@ -276,7 +280,7 @@ def validate_gps(df: pd.DataFrame) -> ValidatedStream:
         ("Lng", -180.0, 180.0),
         ("Alt", -1_000.0, 30_000.0),
         ("Spd", 0.0, 200.0),
-        ("VZ", -100.0, 100.0),
+        ("VZ", -vertical_speed_limit_m_s, vertical_speed_limit_m_s),
     ):
         if column not in working.columns:
             continue

@@ -12,7 +12,12 @@ from app.parsers.base import ParseResult, ParseStatus
 from app.parsers.binary import BinaryDataParser, BinaryParseError
 from app.services.analyzer import AnalysisService
 from app.services.data_quality import DataQualityReport, validate_gps, validate_imu
-from app.services.event_detector import FlightEventReport, detect_flight_events
+from app.services.event_detector import (
+    FlightEventReport,
+    VehicleProfile,
+    detect_flight_events,
+)
+from app.services.incident_report import IncidentReport, build_incident_report
 
 
 @dataclass(frozen=True)
@@ -22,6 +27,7 @@ class ProcessedTelemetry:
     df_att: pd.DataFrame = field(default_factory=pd.DataFrame)
     quality_report: DataQualityReport = field(default_factory=DataQualityReport)
     event_report: FlightEventReport = field(default_factory=FlightEventReport)
+    incident_report: IncidentReport = field(default_factory=IncidentReport)
 
 
 def _pick_first_existing(df: pd.DataFrame, candidates: list[str]) -> str | None:
@@ -137,8 +143,14 @@ def prepare_telemetry_frames(
     df_imu = dataframes.get("IMU", pd.DataFrame())
     df_att = dataframes.get("ATT", pd.DataFrame())
     event_report = detect_flight_events(dataframes)
+    incident_report = build_incident_report(event_report)
 
-    gps_validation = validate_gps(df_gps)
+    gps_validation = validate_gps(
+        df_gps,
+        vertical_speed_limit_m_s=(
+            250.0 if event_report.vehicle_profile is VehicleProfile.ROCKET else 100.0
+        ),
+    )
     df_gps = gps_validation.dataframe
 
     imu_validation = validate_imu(pd.DataFrame())
@@ -160,6 +172,7 @@ def prepare_telemetry_frames(
             df_att=df_att,
             quality_report=quality_report,
             event_report=event_report,
+            incident_report=incident_report,
         )
 
     df_gps = analyzer.filter_outliers(df_gps, "Alt", threshold=5.0)
@@ -181,10 +194,13 @@ def prepare_telemetry_frames(
         df_att=df_att,
         quality_report=quality_report,
         event_report=event_report,
+        incident_report=incident_report,
     )
 
 
-def collect_metrics(analyzer: AnalysisService, df_gps: pd.DataFrame, df_imu: pd.DataFrame) -> dict[str, float]:
+def collect_metrics(
+    analyzer: AnalysisService, df_gps: pd.DataFrame, df_imu: pd.DataFrame
+) -> dict[str, float]:
     max_acceleration = analyzer.get_max_acceleration(df_imu) if not df_imu.empty else {}
 
     return {
@@ -202,7 +218,9 @@ def collect_metrics(analyzer: AnalysisService, df_gps: pd.DataFrame, df_imu: pd.
     }
 
 
-def filter_gps_by_timeframe(df_gps: pd.DataFrame, start_seconds: float, end_seconds: float) -> pd.DataFrame:
+def filter_gps_by_timeframe(
+    df_gps: pd.DataFrame, start_seconds: float, end_seconds: float
+) -> pd.DataFrame:
     if df_gps.empty or "TimeUS" not in df_gps.columns:
         return df_gps
 
