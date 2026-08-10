@@ -5,6 +5,7 @@ import pandas as pd
 from app.services.event_detector import (
     EventKind,
     EventSeverity,
+    VehicleProfile,
     detect_flight_events,
 )
 
@@ -39,7 +40,15 @@ class TestFlightEventDetector(unittest.TestCase):
     def test_radio_failsafe_and_automatic_rtl_keep_evidence(self) -> None:
         report = detect_flight_events(
             {
-                "MSG": pd.DataFrame({"TimeUS": [10_000_000], "Message": ["Radio Failsafe"]}),
+                "MSG": pd.DataFrame(
+                    {
+                        "TimeUS": [0, 10_000_000],
+                        "Message": [
+                            "ArduCopter V4.8.0-dev (409226a6)",
+                            "Radio Failsafe",
+                        ],
+                    }
+                ),
                 "MODE": pd.DataFrame(
                     {
                         "TimeUS": [10_000_000],
@@ -76,6 +85,14 @@ class TestFlightEventDetector(unittest.TestCase):
         self.assertEqual(len(losses), 1)
         self.assertEqual(losses[0].time_us, 300_000)
         self.assertEqual(losses[0].evidence["previous_status"], 6.0)
+
+    def test_unknown_vehicle_does_not_receive_copter_mode_name(self) -> None:
+        report = detect_flight_events(
+            {"MODE": pd.DataFrame({"TimeUS": [1_000_000], "ModeNum": [6], "Rsn": [2]})}
+        )
+
+        self.assertEqual(report.vehicle_profile, VehicleProfile.UNKNOWN)
+        self.assertEqual(report.events[0].evidence["mode_name"], "MODE_6")
 
     def test_ignores_prearm_and_autotest_narration(self) -> None:
         report = detect_flight_events(
