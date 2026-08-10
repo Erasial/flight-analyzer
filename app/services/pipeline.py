@@ -18,6 +18,10 @@ from app.services.event_detector import (
     detect_flight_events,
 )
 from app.services.incident_report import IncidentReport, build_incident_report
+from app.services.segment_analysis import (
+    SegmentAnalysisReport,
+    build_segment_analysis,
+)
 
 
 @dataclass(frozen=True)
@@ -28,6 +32,7 @@ class ProcessedTelemetry:
     quality_report: DataQualityReport = field(default_factory=DataQualityReport)
     event_report: FlightEventReport = field(default_factory=FlightEventReport)
     incident_report: IncidentReport = field(default_factory=IncidentReport)
+    segment_report: SegmentAnalysisReport = field(default_factory=SegmentAnalysisReport)
 
 
 def _pick_first_existing(df: pd.DataFrame, candidates: list[str]) -> str | None:
@@ -166,6 +171,13 @@ def prepare_telemetry_frames(
         }
     )
     if df_gps.empty:
+        segment_report = build_segment_analysis(
+            analyzer,
+            event_report,
+            incident_report,
+            df_gps,
+            df_imu,
+        )
         return ProcessedTelemetry(
             df_gps=df_gps,
             df_imu=df_imu,
@@ -173,6 +185,7 @@ def prepare_telemetry_frames(
             quality_report=quality_report,
             event_report=event_report,
             incident_report=incident_report,
+            segment_report=segment_report,
         )
 
     df_gps = analyzer.filter_outliers(df_gps, "Alt", threshold=5.0)
@@ -188,6 +201,14 @@ def prepare_telemetry_frames(
     if not df_att.empty:
         df_att = analyzer.process_attitude(df_att)
 
+    segment_report = build_segment_analysis(
+        analyzer,
+        event_report,
+        incident_report,
+        df_gps,
+        df_imu,
+    )
+
     return ProcessedTelemetry(
         df_gps=df_gps,
         df_imu=df_imu,
@@ -195,6 +216,7 @@ def prepare_telemetry_frames(
         quality_report=quality_report,
         event_report=event_report,
         incident_report=incident_report,
+        segment_report=segment_report,
     )
 
 
