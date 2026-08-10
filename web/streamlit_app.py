@@ -12,6 +12,7 @@ from app.services.ai_assistant import GeminiFlightAssistant
 from app.services.analyzer import AnalysisService
 from app.services.data_quality import MetricQualityAssessment, assess_metric_quality
 from app.services.event_detector import FlightEventReport
+from app.services.incident_report import IncidentReport
 from app.services.pipeline import (
     ProcessedTelemetry,
     collect_metrics,
@@ -96,14 +97,20 @@ def _render_summary_tab(
         cols[idx % 5].metric(
             f"{key} [{confidence}]",
             _format_metric(value),
-            help="; ".join(assessment.reasons) or (
-                f"Довіра визначена за якістю потоку {assessment.source_stream}."
-            ),
+            help="; ".join(assessment.reasons)
+            or (f"Довіра визначена за якістю потоку {assessment.source_stream}."),
         )
 
 
-def _render_events_tab(event_report: FlightEventReport) -> None:
+def _render_events_tab(
+    event_report: FlightEventReport,
+    incident_report: IncidentReport,
+) -> None:
     summary = event_report.to_dict()["summary"]
+    st.caption(
+        f"Профіль: {summary['vehicle_profile'].upper()} | "
+        f"Прошивка: {summary['firmware'] or 'невідома'}"
+    )
     cols = st.columns(4)
     cols[0].metric("Події", summary["event_count"])
     cols[1].metric("Польотні сегменти", summary["flight_segment_count"])
@@ -139,6 +146,26 @@ def _render_events_tab(event_report: FlightEventReport) -> None:
     st.dataframe(pd.DataFrame(event_rows), width="stretch", hide_index=True)
     for warning in event_report.warnings:
         st.warning(warning)
+
+    st.subheader("Incident report")
+    if not incident_report.incidents:
+        st.success("Підтримуваних інцидентів або failsafe не виявлено.")
+    else:
+        incident_rows = [
+            {
+                "№": incident.index,
+                "Тип": incident.incident_type.value,
+                "Сегмент": incident.segment_index,
+                "Статус": incident.status.value.upper(),
+                "Довіра": incident.confidence.value.upper(),
+                "Реакція, с": incident.response_latency_s,
+                "До землі, с": incident.time_to_ground_s,
+                "До DISARM, с": incident.time_to_disarm_s,
+                "Висновок": incident.narrative,
+            }
+            for incident in incident_report.incidents
+        ]
+        st.dataframe(pd.DataFrame(incident_rows), width="stretch", hide_index=True)
 
 
 def _render_export_section(
@@ -261,7 +288,9 @@ def _render_speed_drift_tab(
         return
 
     if "VelAccNorm" not in df_imu.columns or "TimeUS" not in df_imu.columns:
-        st.warning("Швидкість з акселерометра недоступна: для IMU потрібні Acc/Gyro поля та TimeUS.")
+        st.warning(
+            "Швидкість з акселерометра недоступна: для IMU потрібні Acc/Gyro поля та TimeUS."
+        )
         return
 
     gps = df_gps.copy()
@@ -326,7 +355,9 @@ def _render_speed_drift_tab(
     )
 
     st.plotly_chart(fig, width="stretch")
-    st.caption("Примітка: швидкість, отримана інтегруванням акселерометра, накопичує дрейф з часом.")
+    st.caption(
+        "Примітка: швидкість, отримана інтегруванням акселерометра, накопичує дрейф з часом."
+    )
 
 
 def _render_ai_tab(
@@ -339,7 +370,9 @@ def _render_ai_tab(
     st.caption("Звіт формується українською мовою на основі метрик польоту та зведення телеметрії.")
 
     if not gemini_api_key:
-        st.info("Вкажіть Gemini API ключ у бічній панелі (або через змінну середовища GEMINI_API_KEY).")
+        st.info(
+            "Вкажіть Gemini API ключ у бічній панелі (або через змінну середовища GEMINI_API_KEY)."
+        )
         return
 
     if st.button("Згенерувати AI-аналіз", width="stretch"):
@@ -465,7 +498,9 @@ def main() -> None:
                 st.warning(warning)
 
     try:
-        telemetry: ProcessedTelemetry = prepare_telemetry_frames(analyzer, state.data, imu_index=state.imu_index)
+        telemetry: ProcessedTelemetry = prepare_telemetry_frames(
+            analyzer, state.data, imu_index=state.imu_index
+        )
 
     except (ValueError, KeyError) as exc:
         LOGGER.exception("Telemetry preparation failed")
@@ -561,7 +596,7 @@ def main() -> None:
         _render_ai_tab(metrics, df_gps, df_imu, gemini_api_key)
 
     with tabs[5]:
-        _render_events_tab(telemetry.event_report)
+        _render_events_tab(telemetry.event_report, telemetry.incident_report)
 
 
 if __name__ == "__main__":

@@ -10,7 +10,9 @@ from visualization.flight_plotter import plot_flight_path_3d
 
 
 def parse_args() -> argparse.Namespace:
-    cli = argparse.ArgumentParser(description="Analyze ArduPilot BIN telemetry and export metrics/trajectory plot.")
+    cli = argparse.ArgumentParser(
+        description="Analyze ArduPilot BIN telemetry and export metrics/trajectory plot."
+    )
     cli.add_argument("file_path", help="Path to .BIN log file")
     cli.add_argument("--imu-index", type=int, default=0, help="IMU module index to analyze")
     cli.add_argument(
@@ -18,7 +20,9 @@ def parse_args() -> argparse.Namespace:
         default="flight_trajectory_enu.html",
         help="Output HTML path for 3D trajectory",
     )
-    cli.add_argument("--no-ground", action="store_true", help="Disable ground surface on the 3D plot")
+    cli.add_argument(
+        "--no-ground", action="store_true", help="Disable ground surface on the 3D plot"
+    )
     cli.add_argument("--no-plot", action="store_true", help="Skip trajectory HTML generation")
     cli.add_argument(
         "--expected-size",
@@ -40,6 +44,12 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=50,
         help="Maximum detected non-mode events to print (default: 50)",
+    )
+    cli.add_argument(
+        "--incident-limit",
+        type=int,
+        default=50,
+        help="Maximum incident narratives to print (default: 50)",
     )
     return cli.parse_args()
 
@@ -80,9 +90,7 @@ def run() -> int:
 
         if telemetry.df_gps.empty:
             if parse_result.status is ParseStatus.PARTIAL:
-                logger.error(
-                    "Analysis rejected: the damaged log contains no usable GPS data"
-                )
+                logger.error("Analysis rejected: the damaged log contains no usable GPS data")
                 return 3
             raise ValueError("GPS data is missing or empty in this log file")
 
@@ -101,6 +109,11 @@ def run() -> int:
 
         event_report = telemetry.event_report
         logger.info(
+            "Vehicle profile: %s; firmware: %s",
+            event_report.vehicle_profile.value.upper(),
+            event_report.firmware or "unknown",
+        )
+        logger.info(
             "Detected flight events: %d; segments: %d; critical: %d; warnings: %d",
             len(event_report.events),
             len(event_report.segments),
@@ -110,8 +123,7 @@ def run() -> int:
         visible_events = [
             event
             for event in event_report.events
-            if event.kind.value != "mode_change"
-            or event.severity.value != "info"
+            if event.kind.value != "mode_change" or event.severity.value != "info"
         ]
         if args.event_limit > 0:
             print("\nDetected events:")
@@ -124,6 +136,26 @@ def run() -> int:
                 print(
                     f"... {len(visible_events) - args.event_limit} more event(s); "
                     "increase --event-limit to display them."
+                )
+
+        incident_report = telemetry.incident_report
+        logger.info(
+            "Incident report: %d incident(s); unresolved: %d",
+            len(incident_report.incidents),
+            incident_report.unresolved_count,
+        )
+        if incident_report.incidents and args.incident_limit > 0:
+            print("\nIncident report:")
+            for incident in incident_report.incidents[: args.incident_limit]:
+                print(
+                    f"#{incident.index} {incident.incident_type.value} "
+                    f"[{incident.confidence.value.upper()}/{incident.status.value.upper()}]: "
+                    f"{incident.narrative}"
+                )
+            if len(incident_report.incidents) > args.incident_limit:
+                print(
+                    f"... {len(incident_report.incidents) - args.incident_limit} "
+                    "more incident(s); increase --incident-limit to display them."
                 )
 
         metrics = collect_metrics(analyzer, telemetry.df_gps, telemetry.df_imu)

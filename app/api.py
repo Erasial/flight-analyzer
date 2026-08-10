@@ -30,12 +30,13 @@ analyzer = AnalysisService()
 # In-memory storage for analysis results (using UUID as key)
 results_storage: dict[str, Any] = {}
 
+
 @app.post("/analyze")
 async def analyze_flight_log(file: Annotated[UploadFile, File(...)]):
     """
     Upload a .BIN file, process it, and return a unique identifier for the result.
     """
-    if not file.filename or not file.filename.upper().endswith('.BIN'):
+    if not file.filename or not file.filename.upper().endswith(".BIN"):
         raise HTTPException(status_code=400, detail="Only .BIN files are allowed.")
 
     temp_path = None
@@ -70,27 +71,24 @@ async def analyze_flight_log(file: Annotated[UploadFile, File(...)]):
                     "warnings": list(parse_result.warnings),
                 },
             )
-        
+
         # Collect various flight metrics
         metrics = collect_metrics(analyzer, telemetry.df_gps, telemetry.df_imu)
         metric_quality = assess_metric_quality(metrics, telemetry.quality_report)
 
         # Merge ATT and GPS data for synchronized telemetry
         if not telemetry.df_att.empty and not telemetry.df_gps.empty:
-            # ArduPilot data usually has TimeUS for all messages. 
+            # ArduPilot data usually has TimeUS for all messages.
             # We use merge_asof for nearest-time synchronization.
-            df_gps_sorted = telemetry.df_gps.sort_values('TimeUS')
-            df_att_sorted = telemetry.df_att.sort_values('TimeUS')
-            
+            df_gps_sorted = telemetry.df_gps.sort_values("TimeUS")
+            df_att_sorted = telemetry.df_att.sort_values("TimeUS")
+
             # Ensure TimeUS is numeric for merging
-            df_gps_sorted['TimeUS'] = pd.to_numeric(df_gps_sorted['TimeUS'])
-            df_att_sorted['TimeUS'] = pd.to_numeric(df_att_sorted['TimeUS'])
-            
+            df_gps_sorted["TimeUS"] = pd.to_numeric(df_gps_sorted["TimeUS"])
+            df_att_sorted["TimeUS"] = pd.to_numeric(df_att_sorted["TimeUS"])
+
             df_combined = pd.merge_asof(
-                df_gps_sorted,
-                df_att_sorted,
-                on='TimeUS',
-                direction='nearest'
+                df_gps_sorted, df_att_sorted, on="TimeUS", direction="nearest"
             )
         else:
             df_combined = telemetry.df_gps
@@ -102,20 +100,29 @@ async def analyze_flight_log(file: Annotated[UploadFile, File(...)]):
         available_cols = df_combined.columns.tolist()
         # Ensure we pick Lat, Lng, Alt, East, North, Up as well
         target_cols = [
-            'Lat', 'Lng', 'Alt', 'East', 'North', 'Up', 'TimeUS',
-            'Roll', 'Pitch', 'Yaw', 'Yaw_y',
+            "Lat",
+            "Lng",
+            "Alt",
+            "East",
+            "North",
+            "Up",
+            "TimeUS",
+            "Roll",
+            "Pitch",
+            "Yaw",
+            "Yaw_y",
         ]
         cols_to_use = [c for c in target_cols if c in available_cols]
-        
+
         # Explicitly make a copy of the slice
         chart_data = df_combined[cols_to_use].copy()
         # Rename Yaw_y to Yaw if it exists
-        if 'Yaw_y' in chart_data.columns:
-            chart_data = chart_data.rename(columns={'Yaw_y': 'Yaw'})
+        if "Yaw_y" in chart_data.columns:
+            chart_data = chart_data.rename(columns={"Yaw_y": "Yaw"})
         if not chart_data.empty:
-            start_time = chart_data['TimeUS'].iloc[0]
-            chart_data['RelativeTime'] = (chart_data['TimeUS'] - start_time) / 1e6
-        
+            start_time = chart_data["TimeUS"].iloc[0]
+            chart_data["RelativeTime"] = (chart_data["TimeUS"] - start_time) / 1e6
+
         chart_points = chart_data.to_dict(orient="records")
 
         # Store the result with a unique ID
@@ -133,13 +140,13 @@ async def analyze_flight_log(file: Annotated[UploadFile, File(...)]):
             },
             "data_quality": telemetry.quality_report.to_dict(),
             "flight_events": telemetry.event_report.to_dict(),
+            "incidents": telemetry.incident_report.to_dict(),
             "metrics": metrics,
             "metric_quality": {
-                name: assessment.to_dict()
-                for name, assessment in metric_quality.items()
+                name: assessment.to_dict() for name, assessment in metric_quality.items()
             },
             "table_preview": table_data,
-            "chart_points": chart_points
+            "chart_points": chart_points,
         }
 
         return {"result_id": result_id}
@@ -153,6 +160,7 @@ async def analyze_flight_log(file: Annotated[UploadFile, File(...)]):
         if temp_path and os.path.exists(temp_path):
             os.remove(temp_path)
 
+
 @app.get("/results/{result_id}")
 async def get_analysis_result(result_id: str):
     """
@@ -160,13 +168,16 @@ async def get_analysis_result(result_id: str):
     """
     if result_id not in results_storage:
         raise HTTPException(status_code=404, detail="Result ID not found.")
-    
+
     return results_storage[result_id]
+
 
 @app.get("/")
 async def root():
     return {"message": "Flight Data Analyzer API is running"}
 
+
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run(app, host="0.0.0.0", port=8000)
