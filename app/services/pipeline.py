@@ -4,11 +4,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-import pandas as pd
 import numpy as np
+import pandas as pd
 
-from app.core.utils import wgs84_to_enu, integrate_velocity_from_imu_trapezoidal
-from app.parsers.binary import BinaryDataParser
+from app.core.utils import integrate_velocity_from_imu_trapezoidal, wgs84_to_enu
+from app.parsers.base import ParseResult, ParseStatus
+from app.parsers.binary import BinaryDataParser, BinaryParseError
 from app.services.analyzer import AnalysisService
 
 
@@ -99,14 +100,25 @@ def parse_data_from_path(parser: BinaryDataParser, file_path: str) -> dict[str, 
     return parser.parse(file_path)
 
 
+def parse_result_from_path(parser: BinaryDataParser, file_path: str) -> ParseResult:
+    return parser.parse_with_diagnostics(file_path)
+
+
 def parse_uploaded_bin(parser: BinaryDataParser, uploaded_file: Any) -> dict[str, pd.DataFrame]:
+    result = parse_uploaded_bin_result(parser, uploaded_file)
+    if result.status is ParseStatus.REJECTED:
+        raise BinaryParseError(result.error or "BIN file could not be decoded")
+    return result.dataframes
+
+
+def parse_uploaded_bin_result(parser: BinaryDataParser, uploaded_file: Any) -> ParseResult:
     suffix = Path(uploaded_file.name).suffix or ".BIN"
     temp_path = ""
     try:
         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
             tmp.write(uploaded_file.getbuffer())
             temp_path = tmp.name
-        return parser.parse(temp_path)
+        return parser.parse_with_diagnostics(temp_path)
     finally:
         if temp_path and os.path.exists(temp_path):
             os.remove(temp_path)
