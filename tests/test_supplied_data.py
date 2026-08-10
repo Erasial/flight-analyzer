@@ -42,6 +42,13 @@ class TestSuppliedData(unittest.TestCase):
         )
         self.assertEqual(telemetry.quality_report.streams["GPS"].valid_records, 262)
         self.assertEqual(telemetry.incident_report.incidents, ())
+        phases = telemetry.segment_report.segments
+        self.assertEqual(
+            [phase.label for phase in phases],
+            ["PAD_IDLE", "BOOST", "COAST", "APOGEE", "DESCENT"],
+        )
+        self.assertTrue(all(phase.complete for phase in phases[:-1]))
+        self.assertFalse(phases[-1].complete)
 
     def test_00000019_filters_only_uninitialized_gps_sample(self) -> None:
         result, telemetry = self._analyze("00000019.BIN")
@@ -57,6 +64,12 @@ class TestSuppliedData(unittest.TestCase):
         ]
         self.assertTrue(all(name.startswith("CUSTOM_MODE_") for name in mode_names))
         self.assertEqual(telemetry.incident_report.incidents, ())
+        phases = telemetry.segment_report.segments
+        self.assertEqual(
+            [phase.label for phase in phases],
+            ["BOOST", "COAST", "APOGEE", "DESCENT"],
+        )
+        self.assertGreater(phases[0].metrics["Max Acc X (m/s^2)"], 50.0)
 
 
 if __name__ == "__main__":
