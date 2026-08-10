@@ -22,9 +22,9 @@ firmware in SITL and contain a high-dynamic rocket profile.
 - The log continues after parachute release but contains no landing, ARM or
   DISARM event.
 
-The current generic GPS validator marks 33 samples as implausible because the
-rocket reaches vertical speed above the Copter-oriented `100 m/s` limit. This is
-a vehicle-profile mismatch, not evidence of file corruption.
+The rocket reaches vertical speed above the Copter-oriented `100 m/s` limit.
+The analyzer therefore selects a rocket-specific validation profile and retains
+all 262 GPS samples; treating those boost samples as corrupt would be incorrect.
 
 ## `00000019.BIN`
 
