@@ -11,6 +11,8 @@ from app.core.utils import integrate_velocity_from_imu_trapezoidal, wgs84_to_enu
 from app.parsers.base import ParseResult, ParseStatus
 from app.parsers.binary import BinaryDataParser, BinaryParseError
 from app.services.analyzer import AnalysisService
+from app.services.data_quality import DataQualityReport, validate_gps, validate_imu
+from app.services.event_detector import FlightEventReport, detect_flight_events
 
 
 @dataclass(frozen=True)
@@ -18,6 +20,8 @@ class ProcessedTelemetry:
     df_gps: pd.DataFrame
     df_imu: pd.DataFrame
     df_att: pd.DataFrame = field(default_factory=pd.DataFrame)
+    quality_report: DataQualityReport = field(default_factory=DataQualityReport)
+    event_report: FlightEventReport = field(default_factory=FlightEventReport)
 
 
 def _pick_first_existing(df: pd.DataFrame, candidates: list[str]) -> str | None:
@@ -132,19 +136,38 @@ def prepare_telemetry_frames(
     df_gps = dataframes.get("GPS", pd.DataFrame())
     df_imu = dataframes.get("IMU", pd.DataFrame())
     df_att = dataframes.get("ATT", pd.DataFrame())
+    event_report = detect_flight_events(dataframes)
 
+    gps_validation = validate_gps(df_gps)
+    df_gps = gps_validation.dataframe
+
+    imu_validation = validate_imu(pd.DataFrame())
+    if not df_imu.empty:
+        df_imu = analyzer.filter_imu_module(df_imu, imu_index=imu_index)
+        imu_validation = validate_imu(df_imu)
+        df_imu = imu_validation.dataframe
+
+    quality_report = DataQualityReport(
+        streams={
+            "GPS": gps_validation.report,
+            "IMU": imu_validation.report,
+        }
+    )
     if df_gps.empty:
-        return ProcessedTelemetry(df_gps=df_gps, df_imu=df_imu, df_att=df_att)
+        return ProcessedTelemetry(
+            df_gps=df_gps,
+            df_imu=df_imu,
+            df_att=df_att,
+            quality_report=quality_report,
+            event_report=event_report,
+        )
 
-    # Improved GPS processing: filter outliers in speed/altitude if necessary
-    df_gps = analyzer.filter_gps_low_quality_samples(df_gps)
-    df_gps = analyzer.filter_outliers(df_gps, 'Alt', threshold=5.0) # ArduPilot Alt can jump
+    df_gps = analyzer.filter_outliers(df_gps, "Alt", threshold=5.0)
     df_gps = wgs84_to_enu(df_gps)
 
     if not df_imu.empty:
-        df_imu = analyzer.filter_imu_module(df_imu, imu_index=imu_index)
         # Smooth IMU data as it is often noisy
-        for col in ['AccX', 'AccY', 'AccZ']:
+        for col in ["AccX", "AccY", "AccZ"]:
             if col in df_imu.columns:
                 df_imu = analyzer.smooth_signal(df_imu, col, window=5)
         df_imu = _integrate_imu_velocity(df_imu)
@@ -152,7 +175,13 @@ def prepare_telemetry_frames(
     if not df_att.empty:
         df_att = analyzer.process_attitude(df_att)
 
-    return ProcessedTelemetry(df_gps=df_gps, df_imu=df_imu, df_att=df_att)
+    return ProcessedTelemetry(
+        df_gps=df_gps,
+        df_imu=df_imu,
+        df_att=df_att,
+        quality_report=quality_report,
+        event_report=event_report,
+    )
 
 
 def collect_metrics(analyzer: AnalysisService, df_gps: pd.DataFrame, df_imu: pd.DataFrame) -> dict[str, float]:
