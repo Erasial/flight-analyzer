@@ -5,6 +5,7 @@ from pathlib import Path
 from app.parsers.base import ParseStatus
 from app.parsers.binary import BinaryDataParser
 from app.services.analyzer import AnalysisService
+from app.services.data_quality import QualityStatus
 from app.services.pipeline import prepare_telemetry_frames
 
 CORPUS_ROOT = os.getenv("UAV_LOG_CORPUS")
@@ -59,6 +60,14 @@ class TestCorruptCorpus(unittest.TestCase):
         imu_rate = AnalysisService.get_sample_rate(telemetry.df_imu)
 
         self.assertEqual(result.status, ParseStatus.PARTIAL)
+        self.assertEqual(
+            telemetry.quality_report.streams["IMU"].status,
+            QualityStatus.WARNING,
+        )
+        self.assertEqual(
+            telemetry.quality_report.streams["IMU"].timestamp_outliers,
+            1,
+        )
         self.assertGreater(imu_rate, 1.0)
         self.assertLess(imu_rate, 1_000.0)
 
