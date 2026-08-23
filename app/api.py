@@ -1,15 +1,16 @@
-import uuid
-from fastapi import FastAPI, UploadFile, File, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-import pandas as pd
-import io
 import os
 import tempfile
-from typing import List, Dict, Any
+import uuid
+from typing import Annotated, Any
 
+import pandas as pd
+from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
+
+from app.parsers.base import ParseStatus
 from app.parsers.binary import BinaryDataParser
 from app.services.analyzer import AnalysisService
-from app.services.pipeline import prepare_telemetry_frames, collect_metrics
+from app.services.pipeline import collect_metrics, prepare_telemetry_frames
 
 app = FastAPI(title="Flight Data Analyzer API")
 
@@ -26,14 +27,14 @@ app.add_middleware(
 parser = BinaryDataParser()
 analyzer = AnalysisService()
 # In-memory storage for analysis results (using UUID as key)
-results_storage: Dict[str, Any] = {}
+results_storage: dict[str, Any] = {}
 
 @app.post("/analyze")
-async def analyze_flight_log(file: UploadFile = File(...)):
+async def analyze_flight_log(file: Annotated[UploadFile, File(...)]):
     """
     Upload a .BIN file, process it, and return a unique identifier for the result.
     """
-    if not file.filename.endswith('.BIN'):
+    if not file.filename or not file.filename.upper().endswith('.BIN'):
         raise HTTPException(status_code=400, detail="Only .BIN files are allowed.")
 
     temp_path = None
@@ -45,13 +46,29 @@ async def analyze_flight_log(file: UploadFile = File(...)):
             temp_path = tmp.name
 
         # Parse the binary file into dataframes
-        dataframes = parser.parse(temp_path)
+        parse_result = parser.parse_with_diagnostics(temp_path)
+        if parse_result.status is ParseStatus.REJECTED:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "message": parse_result.error or "BIN file could not be decoded",
+                    "integrity_status": parse_result.status.value,
+                    "warnings": list(parse_result.warnings),
+                },
+            )
 
         # Prepare telemetry frames (GPS and IMU)
-        telemetry = prepare_telemetry_frames(analyzer, dataframes)
+        telemetry = prepare_telemetry_frames(analyzer, parse_result.dataframes)
 
         if telemetry.df_gps.empty:
-            raise HTTPException(status_code=400, detail="GPS data is missing or empty in this log file.")
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "message": "GPS data is missing or empty in this log file.",
+                    "integrity_status": parse_result.status.value,
+                    "warnings": list(parse_result.warnings),
+                },
+            )
         
         # Collect various flight metrics
         metrics = collect_metrics(analyzer, telemetry.df_gps, telemetry.df_imu)
@@ -82,7 +99,10 @@ async def analyze_flight_log(file: UploadFile = File(...)):
         # Prepare chart points including raw GPS for mapping, ENU for 3D, and Attitude
         available_cols = df_combined.columns.tolist()
         # Ensure we pick Lat, Lng, Alt, East, North, Up as well
-        target_cols = ['Lat', 'Lng', 'Alt', 'East', 'North', 'Up', 'TimeUS', 'Roll', 'Pitch', 'Yaw', 'Yaw_y']
+        target_cols = [
+            'Lat', 'Lng', 'Alt', 'East', 'North', 'Up', 'TimeUS',
+            'Roll', 'Pitch', 'Yaw', 'Yaw_y',
+        ]
         cols_to_use = [c for c in target_cols if c in available_cols]
         
         # Explicitly make a copy of the slice
@@ -100,6 +120,15 @@ async def analyze_flight_log(file: UploadFile = File(...)):
         result_id = str(uuid.uuid4())
         results_storage[result_id] = {
             "filename": file.filename,
+            "integrity": {
+                "status": parse_result.status.value,
+                "warnings": list(parse_result.warnings),
+                "decoded_message_count": parse_result.decoded_message_count,
+                "decoder_diagnostic_count": parse_result.diagnostics.total_lines,
+                "suppressed_diagnostic_count": parse_result.diagnostics.suppressed_lines,
+                "artifact_size_bytes": parse_result.artifact_size_bytes,
+                "artifact_sha256": parse_result.artifact_sha256,
+            },
             "metrics": metrics,
             "table_preview": table_data,
             "chart_points": chart_points
@@ -107,8 +136,10 @@ async def analyze_flight_log(file: UploadFile = File(...)):
 
         return {"result_id": result_id}
 
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
     finally:
         # Clean up temporary file
         if temp_path and os.path.exists(temp_path):
